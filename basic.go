@@ -1,8 +1,11 @@
 package AutoCrudGo
 
 import (
+	"encoding/json"
 	"github.com/gin-gonic/gin"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -138,4 +141,49 @@ func (s Server) getServer() *http.Server {
 }
 func (s Server) ListenAndServe() error {
 	return s.server.ListenAndServe()
+}
+
+func GetConditionMapFromRst(c *gin.Context) (map[string]interface{}, error) {
+	var maps map[string]interface{}
+	var er error
+	if c.Request.Method == "POST" {
+		contentType := c.GetHeader("Content-Type")
+		if strings.Contains(contentType, "application/x-www-form-urlencoded") {
+			maps = make(map[string]interface{})
+			er = c.Request.ParseForm()
+			if er != nil {
+				return nil, er
+			}
+			values := c.Request.Form
+			for k, v := range values {
+				if len(v) == 1 {
+					maps[k] = v[0]
+				} else {
+					maps[k] = v
+				}
+			}
+
+		} else if strings.Contains(contentType, "application/json") {
+			bbs, er := io.ReadAll(c.Request.Body)
+			if er != nil {
+				return nil, er
+			}
+			er = json.Unmarshal(bbs, &maps)
+		}
+	} else if c.Request.Method == http.MethodGet {
+		maps = make(map[string]interface{})
+		values := c.Request.URL.Query()
+		for k, v := range values {
+			if len(v) == 1 {
+				maps[k] = v[0]
+			} else {
+				maps[k] = v
+			}
+		}
+	}
+	if er != nil {
+		return nil, er
+	}
+	return maps, nil
+
 }
