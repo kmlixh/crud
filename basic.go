@@ -13,8 +13,12 @@ type CodeMsg map[string]interface{}
 
 func Ok(data ...interface{}) CodeMsg {
 	c := RawCodeMsg(0, "ok", nil)
-	if data != nil && len(data) > 0 {
-		c.SetData(data[0])
+	if data != nil && len(data) >= 1 {
+		if len(data) == 1 {
+			c.SetData(data[0])
+		} else {
+			c.SetData(data)
+		}
 	}
 	return c
 }
