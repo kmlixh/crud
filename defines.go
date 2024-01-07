@@ -54,10 +54,7 @@ type ConditionParam struct {
 	QueryOpera
 }
 
-func RegisterDefaultLite(prefix string, i interface{}, routes gin.IRoutes, db *gom.DB) {
-
-}
-func RegisterDefault(prefix string, i interface{}, routes gin.IRoutes, db *gom.DB, queryCols []string, insertCols []string, updateCols []string) {
+func RegisterDefault(prefix string, i interface{}, routes gin.IRoutes, db *gom.DB, queryCols []string, queryDetailCols []string, insertCols []string, updateCols []string) {
 
 }
 func GetQueryListHandler(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
@@ -88,7 +85,7 @@ func GetUpdateHandler(i interface{}, db *gom.DB, queryParam []ConditionParam, co
 		Handlers:   []gin.HandlerFunc{DoUpdate(i, db, queryParam, columns)},
 	}
 }
-func GetDeleteHandler(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
+func GetDeleteHandler(i interface{}, db *gom.DB, queryParam []ConditionParam) RouteHandler {
 	return RouteHandler{
 		Path:       "delete",
 		HttpMethod: http.MethodPost,
