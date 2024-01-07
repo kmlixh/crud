@@ -3,12 +3,13 @@ package AutoCrudGo
 import (
 	"errors"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/kmlixh/gom/v2"
 	"net/http"
 	"reflect"
 	"strconv"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/kmlixh/gom/v3"
 )
 
 type RouteHandler struct {
@@ -43,6 +44,7 @@ const (
 	Like
 	LikeIgnoreLeft
 	LikeIgnoreRight
+	Between
 )
 
 type ConditionParam struct {
@@ -52,10 +54,10 @@ type ConditionParam struct {
 	QueryOpera
 }
 
-func RegisterDefault(prefix string, i interface{}, routes gin.IRoutes, db *gom.DB) {
+func RegisterDefaultLite(prefix string, i interface{}, routes gin.IRoutes, db *gom.DB) {
 
 }
-func RegisterDefault2(prefix string, i interface{}, routes gin.IRoutes, db *gom.DB, queryCols []string, updateCols []string) {
+func RegisterDefault(prefix string, i interface{}, routes gin.IRoutes, db *gom.DB, queryCols []string, insertCols []string, updateCols []string) {
 
 }
 func GetQueryListHandler(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
@@ -63,6 +65,34 @@ func GetQueryListHandler(i interface{}, db *gom.DB, queryParam []ConditionParam,
 		Path:       "list",
 		HttpMethod: "Any",
 		Handlers:   []gin.HandlerFunc{QueryList(i, db, queryParam, columns)},
+	}
+}
+func GetQuerySingleHandler(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
+	return RouteHandler{
+		Path:       "detail",
+		HttpMethod: http.MethodGet,
+		Handlers:   []gin.HandlerFunc{QuerySingle(i, db, queryParam, columns)},
+	}
+}
+func GetInsertHandler(i interface{}, db *gom.DB, columns []string) RouteHandler {
+	return RouteHandler{
+		Path:       "add",
+		HttpMethod: http.MethodPost,
+		Handlers:   []gin.HandlerFunc{DoInsert(i, db, columns)},
+	}
+}
+func GetUpdateHandler(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
+	return RouteHandler{
+		Path:       "update",
+		HttpMethod: http.MethodPost,
+		Handlers:   []gin.HandlerFunc{DoUpdate(i, db, queryParam, columns)},
+	}
+}
+func GetDeleteHandler(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
+	return RouteHandler{
+		Path:       "delete",
+		HttpMethod: http.MethodPost,
+		Handlers:   []gin.HandlerFunc{DoDelete(i, db, queryParam)},
 	}
 }
 
@@ -122,13 +152,6 @@ func QueryList(i interface{}, db *gom.DB, queryParam []ConditionParam, columns [
 		RenderJson(c, codeMsg)
 	}
 }
-func getQuerySingle(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
-	return RouteHandler{
-		Path:       "detail",
-		HttpMethod: http.MethodGet,
-		Handlers:   []gin.HandlerFunc{QuerySingle(i, db, queryParam, columns)},
-	}
-}
 func QuerySingle(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		results := reflect.New(reflect.TypeOf(i)).Interface()
@@ -146,18 +169,58 @@ func QuerySingle(i interface{}, db *gom.DB, queryParam []ConditionParam, columns
 }
 func DoUpdate(i interface{}, db *gom.DB, param []ConditionParam, columns []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		cnd, _, er := MapToParamCondition(c, param)
+		if er != nil {
+			RenderErrs(c, er)
+			return
+		}
+		if cnd != nil {
+			db.Where(cnd)
+		}
 		results := reflect.New(reflect.TypeOf(i)).Interface()
 		err := c.ShouldBind(&results)
 		if err != nil {
-
+			RenderErrs(c, err)
+			return
 		}
+		rs, er := db.Insert(results, columns...)
+		if er != nil {
+			RenderErrs(c, err)
+			return
+		}
+		RenderOk(c, rs)
 	}
 }
 func DoInsert(i interface{}, db *gom.DB, columns []string) gin.HandlerFunc {
-
+	return func(c *gin.Context) {
+		results := reflect.New(reflect.TypeOf(i)).Interface()
+		err := c.ShouldBind(&results)
+		if err != nil {
+			RenderErrs(c, err)
+			return
+		}
+		rs, er := db.Insert(results, columns...)
+		if er != nil {
+			RenderErrs(c, err)
+			return
+		}
+		RenderOk(c, rs)
+	}
 }
 func DoDelete(i interface{}, db *gom.DB, param []ConditionParam) gin.HandlerFunc {
-
+	return func(c *gin.Context) {
+		cnd, _, er := MapToParamCondition(c, param)
+		if er != nil {
+			RenderErrs(c, er)
+			return
+		}
+		rs, er := db.Where(cnd).Delete(i)
+		if er != nil {
+			RenderErrs(c, er)
+			return
+		}
+		RenderOk(c, rs)
+	}
 }
 
 func MapToParamCondition(c *gin.Context, queryParam []ConditionParam) (gom.Condition, map[string]interface{}, error) {

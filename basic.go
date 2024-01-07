@@ -2,11 +2,12 @@ package AutoCrudGo
 
 import (
 	"encoding/json"
-	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 type CodeMsg map[string]interface{}
@@ -73,6 +74,9 @@ func RenderOk(c *gin.Context, data ...interface{}) {
 }
 func RenderErr(c *gin.Context) {
 	c.JSON(200, Err())
+}
+func RenderErrs(c *gin.Context, er error) {
+	c.JSON(200, Err2(500, er.Error()))
 }
 func RenderErr2(c *gin.Context, code int, msg string) {
 	c.JSON(200, Err2(code, msg))
