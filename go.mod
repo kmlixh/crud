@@ -1,4 +1,4 @@
-module AutoCrudGo
+module github.com/kmlixh/AutoCrudGo
 
 go 1.20
 
