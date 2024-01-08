@@ -3,35 +3,18 @@ package AutoCrudGo
 import (
 	"errors"
 	"fmt"
+	"github.com/gin-gonic/gin"
+	"github.com/kmlixh/gom/v3"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
-	"time"
-
-	"github.com/gin-gonic/gin"
-	"github.com/kmlixh/gom/v3"
-)
-
-type CndOpera int
-
-const (
-	_ CndOpera = iota
-	Le
-	Lt
-	Ge
-	Gt
-	Eq
-	Like
-	LikeIgnoreLeft
-	LikeIgnoreRight
 )
 
 type ConditionParam struct {
 	QueryName string
 	ColName   string
 	Required  bool
-	CndOpera
 }
 
 type RouteHandler struct {
@@ -80,24 +63,15 @@ func GetConditionParam(columns []string, columnFieldMap map[string]string, i any
 		if ok {
 			panic(errors.New(fmt.Sprintf(" [%s] was not exist! ", fieldName)))
 		}
-		params = append(params, GenDefaultConditionParamByType(col, f, 0))
+		params = append(params, GenDefaultConditionParamByType(col, f))
 	}
 	return params
 }
-func GenDefaultConditionParamByType(column string, f reflect.StructField, opera CndOpera) ConditionParam {
-	if opera == 0 {
-		switch f.Type.Kind() {
-		case reflect.String:
-			opera = Like
-		default:
-			opera = Eq
-		}
-	}
+func GenDefaultConditionParamByType(column string, f reflect.StructField) ConditionParam {
 	return ConditionParam{
 		QueryName: GetFieldDefaultQueryName(f),
 		ColName:   column,
 		Required:  false,
-		CndOpera:  opera,
 	}
 }
 func GetFieldDefaultQueryName(f reflect.StructField) string {
@@ -266,50 +240,54 @@ func DoDelete(i any, db *gom.DB, param []ConditionParam) gin.HandlerFunc {
 	}
 }
 
+var operators = []string{"Eq", "Le", "Lt", "Ge", "Gt", "Like", "LikeLeft", "LikeRight", "In", "NotIn", "NotLike", "NotEq"}
+
 func MapToParamCondition(c *gin.Context, queryParam []ConditionParam) (gom.Condition, map[string]interface{}, error) {
 	maps, err := GetConditionMapFromRst(c)
+	hasValMap := make(map[string]string)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(maps) > 0 && len(queryParam) > 0 {
 		var cnd = gom.CndEmpty()
 		for _, param := range queryParam {
-			val, hasVal := maps[param.QueryName]
-			if param.Required && !hasVal {
-				return nil, maps, errors.New(fmt.Sprintf("%s is requied!", param.QueryName))
+			oldName, hasOldVal := hasValMap[param.QueryName]
+			if hasOldVal {
+				return nil, nil, errors.New(fmt.Sprintf("u have a query condition like [%s]", oldName))
 			}
-			if hasVal {
-				switch param.CndOpera {
-				case Eq:
-					t := reflect.TypeOf(val)
-					if t.Kind() == reflect.Ptr {
-						t = t.Elem()
+			for _, oper := range operators {
+				val, hasVal := maps[param.QueryName+oper]
+				if hasVal {
+					hasValMap[param.ColName] = param.QueryName + oper
+					switch oper {
+					case "Eq":
+						cnd.Eq(param.ColName, val)
+					case "NotEq":
+						cnd.NotEq(param.ColName, val)
+					case "Le":
+						cnd.Le(param.ColName, val)
+					case "Lt":
+						cnd.Lt(param.ColName, val)
+					case "Ge":
+						cnd.Ge(param.ColName, val)
+					case "Gt":
+						cnd.Gt(param.ColName, val)
+					case "Like":
+						cnd.Like(param.ColName, val)
+					case "LikeLeft":
+						cnd.LikeIgnoreStart(param.ColName, val)
+					case "LikeRight":
+						cnd.LikeIgnoreEnd(param.ColName, val)
+					case "In":
+						cnd.In(param.ColName, gom.UnZipSlice(val)...)
+					case "NotIn":
+						cnd.NotIn(param.ColName, gom.UnZipSlice(val)...)
+					case "NotLike":
+						cnd.NotLike(param.ColName, val)
 					}
-					if t.Kind() != reflect.Struct || t.Kind() == reflect.TypeOf(time.Now()).Kind() || ((t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && t.Elem().Kind() != reflect.Struct) {
-						value := val
-						if (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && t.Elem().Kind() != reflect.Struct {
-							cnd.In(param.ColName, gom.UnZipSlice(value)...)
-						} else {
-							cnd.Eq(param.ColName, value)
-						}
-					}
-				case Ge:
-					cnd.Ge(param.ColName, val)
-				case Gt:
-					cnd.Gt(param.ColName, val)
-				case Lt:
-					cnd.Lt(param.ColName, val)
-				case Le:
-					cnd.Le(param.ColName, val)
-				case Like:
-					cnd.Like(param.ColName, val)
-				case LikeIgnoreLeft:
-					cnd.LikeIgnoreStart(param.ColName, val)
-				case LikeIgnoreRight:
-					cnd.LikeIgnoreEnd(param.ColName, val)
-
 				}
 			}
+
 		}
 		return cnd, maps, nil
 	} else {
