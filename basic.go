@@ -120,25 +120,35 @@ func NewServer2(engine *gin.Engine, addr string, readTimeout time.Duration, writ
 		MaxHeaderBytes: maxHeaderBytes,
 	}, engine}
 }
-func (s Server) SetAddr(addr string) {
+func (s *Server) SetAddr(addr string) *Server {
 	s.server.Addr = addr
+	return s
+
 }
-func (s Server) SetReadTimeout(time time.Duration) {
+func (s *Server) SetReadTimeout(time time.Duration) *Server {
 	s.server.ReadTimeout = time
+	return s
+
 }
-func (s Server) SetWriteTimeout(time time.Duration) {
+func (s *Server) SetWriteTimeout(time time.Duration) *Server {
 	s.server.WriteTimeout = time
+	return s
+
 }
-func (s Server) SetMaxHeaderBytes(max int) {
+func (s *Server) SetMaxHeaderBytes(max int) *Server {
 	s.server.MaxHeaderBytes = max
+	return s
 }
-func (s Server) SetHttpServer(server *http.Server) {
+func (s *Server) SetHttpServer(server *http.Server) *Server {
 	s.server = server
 	s.server.Handler = s.engine
+	return s
+
 }
-func (s Server) SetEngine(engine *gin.Engine) {
+func (s *Server) SetEngine(engine *gin.Engine) *Server {
 	s.engine = engine
 	s.server.Handler = s.engine
+	return s
 }
 
 func (s Server) getEngine() *gin.Engine {
