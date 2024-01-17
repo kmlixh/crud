@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/kmlixh/gom/v3"
+	"github.com/kmlixh/gom/v3/define"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -242,7 +243,7 @@ func DoDelete(i any, db *gom.DB, param []ConditionParam) gin.HandlerFunc {
 
 var operators = []string{"Eq", "Le", "Lt", "Ge", "Gt", "Like", "LikeLeft", "LikeRight", "In", "NotIn", "NotLike", "NotEq"}
 
-func MapToParamCondition(c *gin.Context, queryParam []ConditionParam) (gom.Condition, map[string]interface{}, error) {
+func MapToParamCondition(c *gin.Context, queryParam []ConditionParam) (define.Condition, map[string]interface{}, error) {
 	maps, err := GetConditionMapFromRst(c)
 	hasValMap := make(map[string]string)
 	if err != nil {
