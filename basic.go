@@ -151,10 +151,10 @@ func (s *Server) SetEngine(engine *gin.Engine) *Server {
 	return s
 }
 
-func (s Server) getEngine() *gin.Engine {
+func (s Server) GetEngine() *gin.Engine {
 	return s.engine
 }
-func (s Server) getServer() *http.Server {
+func (s Server) GetServer() *http.Server {
 	return s.server
 }
 func (s Server) ListenAndServe() error {
