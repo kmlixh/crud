@@ -12,10 +12,58 @@ import (
 	"strings"
 )
 
+type DefaultRoutePath string
+
+const (
+	PathList   DefaultRoutePath = "list"
+	PathAdd    DefaultRoutePath = "add"
+	PathDetail DefaultRoutePath = "detail"
+	PathUpdate DefaultRoutePath = "update"
+	PathDelete DefaultRoutePath = "delete"
+)
+
+func (d DefaultRoutePath) String() string {
+	return string(d)
+}
+
 type ConditionParam struct {
 	QueryName string
 	ColName   string
 	Required  bool
+}
+type HandlerRegister struct {
+	Name     string
+	Handlers []RouteHandler
+	IdxMap   map[string]int
+}
+
+func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, asFirst bool) error {
+	_, ok := h.IdxMap[name]
+	if !ok {
+		return errors.New(fmt.Sprintf("handler [%s] not found", name))
+	}
+	routeHandler := h.Handlers[h.IdxMap[name]]
+	if asFirst {
+		routeHandler.Handlers = append([]gin.HandlerFunc{handler}, routeHandler.Handlers...)
+	} else {
+		routeHandler.Handlers = append(routeHandler.Handlers, handler)
+	}
+	h.Handlers[h.IdxMap[name]] = routeHandler
+	return nil
+}
+
+func (h HandlerRegister) register(routes gin.IRoutes) error {
+	if h.Handlers == nil || len(h.Handlers) == 0 {
+		return errors.New("route handler could not be empty or nil")
+	}
+	for _, handler := range h.Handlers {
+		if handler.HttpMethod != "Any" {
+			routes.Handle(handler.HttpMethod, h.Name+"/"+handler.Path, handler.Handlers...)
+		} else {
+			routes.Any(h.Name+"/"+handler.Path, handler.Handlers...)
+		}
+	}
+	return nil
 }
 
 type RouteHandler struct {
@@ -28,14 +76,25 @@ func RegisterHandler(name string, routes gin.IRoutes, handlers ...RouteHandler) 
 	if handlers == nil || len(handlers) == 0 {
 		return errors.New("route handler could not be empty or nil")
 	}
-	for _, handler := range handlers {
-		if handler.HttpMethod != "Any" {
-			routes.Handle(handler.HttpMethod, name+"/"+handler.Path, handler.Handlers...)
-		} else {
-			routes.Any(name+"/"+handler.Path, handler.Handlers...)
-		}
+	register, err := GenHandlerRegister(name, handlers...)
+	if err != nil {
+		return err
 	}
-	return nil
+	return register.register(routes)
+}
+func GenHandlerRegister(name string, handlers ...RouteHandler) (HandlerRegister, error) {
+	if handlers == nil || len(handlers) == 0 {
+		return HandlerRegister{}, errors.New("route handler could not be empty or nil")
+	}
+	handlerIdxMap := make(map[string]int)
+	for i, handler := range handlers {
+		handlerIdxMap[handler.Path] = i
+	}
+	return HandlerRegister{
+		Name:     name,
+		Handlers: handlers,
+		IdxMap:   handlerIdxMap,
+	}, nil
 }
 
 func RegisterDefaultLite(prefix string, i any, routes gin.IRoutes, db *gom.DB) error {
@@ -80,35 +139,35 @@ func GetFieldDefaultQueryName(f reflect.StructField) string {
 }
 func GetQueryListHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
 	return RouteHandler{
-		Path:       "list",
+		Path:       string(PathList),
 		HttpMethod: "Any",
 		Handlers:   []gin.HandlerFunc{QueryList(i, db, queryParam, columns)},
 	}
 }
 func GetQuerySingleHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
 	return RouteHandler{
-		Path:       "detail",
+		Path:       string(PathDetail),
 		HttpMethod: http.MethodGet,
 		Handlers:   []gin.HandlerFunc{QuerySingle(i, db, queryParam, columns)},
 	}
 }
 func GetInsertHandler(i any, db *gom.DB, columns []string) RouteHandler {
 	return RouteHandler{
-		Path:       "add",
+		Path:       string(PathAdd),
 		HttpMethod: http.MethodPost,
 		Handlers:   []gin.HandlerFunc{DoInsert(i, db, columns)},
 	}
 }
 func GetUpdateHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
 	return RouteHandler{
-		Path:       "update",
+		Path:       string(PathUpdate),
 		HttpMethod: http.MethodPost,
 		Handlers:   []gin.HandlerFunc{DoUpdate(i, db, queryParam, columns)},
 	}
 }
 func GetDeleteHandler(i any, db *gom.DB, queryParam []ConditionParam) RouteHandler {
 	return RouteHandler{
-		Path:       "delete",
+		Path:       string(PathDelete),
 		HttpMethod: http.MethodPost,
 		Handlers:   []gin.HandlerFunc{DoDelete(i, db, queryParam)},
 	}
