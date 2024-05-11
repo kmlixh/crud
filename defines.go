@@ -188,7 +188,7 @@ func GetConditionParam(columns []string, columnFieldMap map[string]string, i any
 	for _, col := range columns {
 		fieldName := columnFieldMap[col]
 		f, ok := t.FieldByName(fieldName)
-		if ok {
+		if !ok {
 			panic(errors.New(fmt.Sprintf(" [%s] was not exist! ", fieldName)))
 		}
 		params = append(params, GenDefaultConditionParamByType(col, f))
