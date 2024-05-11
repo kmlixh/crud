@@ -52,7 +52,7 @@ func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, asF
 	return nil
 }
 
-func (h HandlerRegister) register(routes gin.IRoutes) error {
+func (h HandlerRegister) Register(routes gin.IRoutes) error {
 	if h.Handlers == nil || len(h.Handlers) == 0 {
 		return errors.New("route handler could not be empty or nil")
 	}
@@ -80,7 +80,7 @@ func RegisterHandler(name string, routes gin.IRoutes, handlers ...RouteHandler) 
 	if err != nil {
 		return err
 	}
-	return register.register(routes)
+	return register.Register(routes)
 }
 func GenHandlerRegister(name string, handlers ...RouteHandler) (HandlerRegister, error) {
 	if handlers == nil || len(handlers) == 0 {
