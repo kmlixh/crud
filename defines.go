@@ -17,6 +17,15 @@ type DefaultRoutePath string
 type IHandlerRegister interface {
 	Register(routes gin.IRoutes) error
 	AppendHandler(name string, handler gin.HandlerFunc, asFirst bool) error
+	AddHandler(routeHandler RouteHandler) error
+}
+type InterceptorFunc func(c *gin.Context, i any) (any, error)
+
+func DefaultUnMarshalFunc(c *gin.Context, i any) (any, error) {
+	if err := c.ShouldBind(i); err != nil {
+		return nil, err
+	}
+	return i, nil
 }
 
 const (
@@ -42,12 +51,48 @@ type HandlerRegister struct {
 	IdxMap   map[string]int
 }
 
-func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, asFirst bool) error {
-	_, ok := h.IdxMap[name]
+func (h HandlerRegister) AddHandler(routeHandler RouteHandler) error {
+	if h.Handlers == nil {
+		h.Handlers = make([]RouteHandler, 0)
+	}
+	if h.IdxMap == nil {
+		h.IdxMap = make(map[string]int)
+	}
+	h.Handlers = append(h.Handlers, routeHandler)
+	h.IdxMap[routeHandler.Path] = len(h.Handlers) - 1
+	return nil
+}
+func (h HandlerRegister) GetHandler(name string) (RouteHandler, error) {
+	idx, ok := h.IdxMap[name]
+	if !ok {
+		return RouteHandler{}, errors.New(fmt.Sprintf("handler [%s] not found", name))
+	} else {
+		return h.Handlers[idx], nil
+	}
+}
+func (h HandlerRegister) DeleteHandler(name string) error {
+	idx, ok := h.IdxMap[name]
 	if !ok {
 		return errors.New(fmt.Sprintf("handler [%s] not found", name))
+	} else {
+		h.Handlers = append(h.Handlers[:idx], h.Handlers[idx+1:]...)
+		for k, v := range h.IdxMap {
+			if v > idx {
+				h.IdxMap[k] = v - 1
+			}
+		}
+		return nil
 	}
-	routeHandler := h.Handlers[h.IdxMap[name]]
+}
+func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, asFirst bool) error {
+	_, ok := h.IdxMap[name]
+	var routeHandler RouteHandler
+	if !ok {
+		return errors.New(fmt.Sprintf("handler [%s] not found", name))
+	} else {
+		routeHandler = h.Handlers[h.IdxMap[name]]
+
+	}
 	if asFirst {
 		routeHandler.Handlers = append([]gin.HandlerFunc{handler}, routeHandler.Handlers...)
 	} else {
@@ -105,11 +150,11 @@ func GenDefaultHandlerRegister(prefix string, i any, db *gom.DB) (IHandlerRegist
 	columnNames, primaryKeys, primaryAuto, columnIdxMap := gom.GetColumns(reflect.ValueOf(i))
 	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
 	if len(columnNames) > 0 {
-		listHandler := GetQueryListHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols)
-		insertHandler := GetInsertHandler(i, db, queryCols)
-		detailHandler := GetQuerySingleHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols)
-		updateHandler := GetUpdateHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols)
-		deleteHandler := GetDeleteHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i))
+		listHandler := GetQueryListHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols, nil)
+		insertHandler := GetInsertHandler(i, db, queryCols, DefaultUnMarshalFunc, nil)
+		detailHandler := GetQuerySingleHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols, nil)
+		updateHandler := GetUpdateHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols, DefaultUnMarshalFunc, nil)
+		deleteHandler := GetDeleteHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), nil)
 		return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler)
 	} else {
 		return nil, errors.New("Struct was empty")
@@ -126,11 +171,11 @@ func RegisterDefaultLite(prefix string, i any, routes gin.IRoutes, db *gom.DB) e
 
 }
 func RegisterDefault(prefix string, i any, routes gin.IRoutes, db *gom.DB, queryCols []string, queryDetailCols []string, insertCols []string, updateCols []string, columnFieldMap map[string]string) error {
-	listHandler := GetQueryListHandler(i, db, GetConditionParam(queryCols, columnFieldMap, i), queryCols)
-	insertHandler := GetInsertHandler(i, db, insertCols)
-	detailHandler := GetQuerySingleHandler(i, db, GetConditionParam(queryDetailCols, columnFieldMap, i), queryDetailCols)
-	updateHandler := GetUpdateHandler(i, db, GetConditionParam(updateCols, columnFieldMap, i), updateCols)
-	deleteHandler := GetDeleteHandler(i, db, GetConditionParam(updateCols, columnFieldMap, i))
+	listHandler := GetQueryListHandler(i, db, GetConditionParam(queryCols, columnFieldMap, i), queryCols, nil)
+	insertHandler := GetInsertHandler(i, db, insertCols, DefaultUnMarshalFunc, nil)
+	detailHandler := GetQuerySingleHandler(i, db, GetConditionParam(queryDetailCols, columnFieldMap, i), queryDetailCols, nil)
+	updateHandler := GetUpdateHandler(i, db, GetConditionParam(updateCols, columnFieldMap, i), updateCols, DefaultUnMarshalFunc, nil)
+	deleteHandler := GetDeleteHandler(i, db, GetConditionParam(updateCols, columnFieldMap, i), nil)
 	return RegisterHandler(prefix, routes, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler)
 }
 func GetConditionParam(columns []string, columnFieldMap map[string]string, i any) []ConditionParam {
@@ -156,43 +201,43 @@ func GenDefaultConditionParamByType(column string, f reflect.StructField) Condit
 func GetFieldDefaultQueryName(f reflect.StructField) string {
 	return strings.ToLower(f.Name[0:1]) + f.Name[1:]
 }
-func GetQueryListHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
+func GetQueryListHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathList),
 		HttpMethod: "Any",
-		Handlers:   []gin.HandlerFunc{QueryList(i, db, queryParam, columns)},
+		Handlers:   []gin.HandlerFunc{QueryList(i, db, queryParam, columns, beforeCommitFunc)},
 	}
 }
-func GetQuerySingleHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
+func GetQuerySingleHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathDetail),
 		HttpMethod: http.MethodGet,
-		Handlers:   []gin.HandlerFunc{QuerySingle(i, db, queryParam, columns)},
+		Handlers:   []gin.HandlerFunc{QuerySingle(i, db, queryParam, columns, beforeCommitFunc)},
 	}
 }
-func GetInsertHandler(i any, db *gom.DB, columns []string) RouteHandler {
+func GetInsertHandler(i any, db *gom.DB, columns []string, unMarshalFunc InterceptorFunc, beforeCommitFunc InterceptorFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathAdd),
 		HttpMethod: http.MethodPost,
-		Handlers:   []gin.HandlerFunc{DoInsert(i, db, columns)},
+		Handlers:   []gin.HandlerFunc{DoInsert(i, db, columns, unMarshalFunc, beforeCommitFunc)},
 	}
 }
-func GetUpdateHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string) RouteHandler {
+func GetUpdateHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, unMarshalFunc InterceptorFunc, beforeCommitFunc InterceptorFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathUpdate),
 		HttpMethod: http.MethodPost,
-		Handlers:   []gin.HandlerFunc{DoUpdate(i, db, queryParam, columns)},
+		Handlers:   []gin.HandlerFunc{DoUpdate(i, db, queryParam, columns, unMarshalFunc, beforeCommitFunc)},
 	}
 }
-func GetDeleteHandler(i any, db *gom.DB, queryParam []ConditionParam) RouteHandler {
+func GetDeleteHandler(i any, db *gom.DB, queryParam []ConditionParam, beforeCommitFunc InterceptorFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathDelete),
 		HttpMethod: http.MethodPost,
-		Handlers:   []gin.HandlerFunc{DoDelete(i, db, queryParam)},
+		Handlers:   []gin.HandlerFunc{DoDelete(i, db, queryParam, beforeCommitFunc)},
 	}
 }
 
-func QueryList(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string) gin.HandlerFunc {
+func QueryList(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		codeMsg := Ok()
 		results := reflect.New(reflect.SliceOf(reflect.TypeOf(i))).Interface()
@@ -239,6 +284,13 @@ func QueryList(i interface{}, db *gom.DB, queryParam []ConditionParam, columns [
 		if cnd != nil && err == nil {
 			db.Where(cnd)
 		}
+		if beforeCommitFunc != nil {
+			results, err = beforeCommitFunc(c, results)
+			if err != nil {
+				RenderErr2(c, 500, "服务器内部错误："+err.Error())
+				return
+			}
+		}
 		_, err = db.Select(results, columns...)
 		if err != nil {
 			RenderErr2(c, 500, "服务器内部错误："+err.Error())
@@ -248,12 +300,19 @@ func QueryList(i interface{}, db *gom.DB, queryParam []ConditionParam, columns [
 		RenderJson(c, codeMsg)
 	}
 }
-func QuerySingle(i any, db *gom.DB, queryParam []ConditionParam, columns []string) gin.HandlerFunc {
+func QuerySingle(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		results := reflect.New(reflect.TypeOf(i)).Interface()
 		cnd, _, err := MapToParamCondition(c, queryParam)
 		if cnd != nil && err == nil {
 			db.Where(cnd)
+		}
+		if beforeCommitFunc != nil {
+			results, err = beforeCommitFunc(c, results)
+			if err != nil {
+				RenderErr2(c, 500, "服务器内部错误："+err.Error())
+				return
+			}
 		}
 		_, err = db.Select(results, columns...)
 		if err != nil {
@@ -263,8 +322,9 @@ func QuerySingle(i any, db *gom.DB, queryParam []ConditionParam, columns []strin
 		RenderOk(c, results)
 	}
 }
-func DoUpdate(i any, db *gom.DB, param []ConditionParam, columns []string) gin.HandlerFunc {
+func DoUpdate(i any, db *gom.DB, param []ConditionParam, columns []string, unMarshalFunc InterceptorFunc, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		var err error
 		cnd, _, er := MapToParamCondition(c, param)
 		if er != nil {
 			RenderErrs(c, er)
@@ -274,12 +334,24 @@ func DoUpdate(i any, db *gom.DB, param []ConditionParam, columns []string) gin.H
 			db.Where(cnd)
 		}
 		results := reflect.New(reflect.TypeOf(i)).Interface()
-		err := c.ShouldBind(&results)
-		if err != nil {
-			RenderErrs(c, err)
+		if unMarshalFunc != nil {
+			results, err = unMarshalFunc(c, results)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
+		} else {
+			RenderErrs(c, errors.New("unMarshalFunc is nil"))
 			return
 		}
-		rs, er := db.Insert(results, columns...)
+		if beforeCommitFunc != nil {
+			results, err = beforeCommitFunc(c, results)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
+		}
+		rs, er := db.Update(results, columns...)
 		if er != nil {
 			RenderErrs(c, err)
 			return
@@ -287,13 +359,26 @@ func DoUpdate(i any, db *gom.DB, param []ConditionParam, columns []string) gin.H
 		RenderOk(c, rs)
 	}
 }
-func DoInsert(i any, db *gom.DB, columns []string) gin.HandlerFunc {
+func DoInsert(i any, db *gom.DB, columns []string, unMarshalFunc InterceptorFunc, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		var err error
 		results := reflect.New(reflect.TypeOf(i)).Interface()
-		err := c.ShouldBind(&results)
-		if err != nil {
-			RenderErrs(c, err)
+		if unMarshalFunc != nil {
+			results, err = unMarshalFunc(c, results)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
+		} else {
+			RenderErrs(c, errors.New("unMarshalFunc is nil"))
 			return
+		}
+		if beforeCommitFunc != nil {
+			results, err = beforeCommitFunc(c, results)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
 		}
 		rs, er := db.Insert(results, columns...)
 		if er != nil {
@@ -303,7 +388,7 @@ func DoInsert(i any, db *gom.DB, columns []string) gin.HandlerFunc {
 		RenderOk(c, rs)
 	}
 }
-func DoDelete(i any, db *gom.DB, param []ConditionParam) gin.HandlerFunc {
+func DoDelete(i any, db *gom.DB, param []ConditionParam, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cnd, _, er := MapToParamCondition(c, param)
 		if er != nil {
