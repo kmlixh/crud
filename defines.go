@@ -58,8 +58,12 @@ func (h HandlerRegister) AddHandler(routeHandler RouteHandler) error {
 	if h.IdxMap == nil {
 		h.IdxMap = make(map[string]int)
 	}
-	h.Handlers = append(h.Handlers, routeHandler)
-	h.IdxMap[routeHandler.Path] = len(h.Handlers) - 1
+	if _, ok := h.IdxMap[routeHandler.Path]; ok {
+		h.Handlers[h.IdxMap[routeHandler.Path]] = routeHandler
+	} else {
+		h.Handlers = append(h.Handlers, routeHandler)
+		h.IdxMap[routeHandler.Path] = len(h.Handlers) - 1
+	}
 	return nil
 }
 func (h HandlerRegister) GetHandler(name string) (RouteHandler, error) {
