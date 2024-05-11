@@ -1,4 +1,4 @@
-module github.com/kmlixh/autoCrudGo
+module github.com/kmlixh/crudGo
 
 go 1.20
 
