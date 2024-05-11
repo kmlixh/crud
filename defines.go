@@ -14,6 +14,11 @@ import (
 
 type DefaultRoutePath string
 
+type IHandlerRegister interface {
+	Register(routes gin.IRoutes) error
+	AppendHandler(name string, handler gin.HandlerFunc, asFirst bool) error
+}
+
 const (
 	PathList   DefaultRoutePath = "list"
 	PathAdd    DefaultRoutePath = "add"
@@ -82,7 +87,7 @@ func RegisterHandler(name string, routes gin.IRoutes, handlers ...RouteHandler) 
 	}
 	return register.Register(routes)
 }
-func GenHandlerRegister(name string, handlers ...RouteHandler) (HandlerRegister, error) {
+func GenHandlerRegister(name string, handlers ...RouteHandler) (IHandlerRegister, error) {
 	if handlers == nil || len(handlers) == 0 {
 		return HandlerRegister{}, errors.New("route handler could not be empty or nil")
 	}
@@ -95,6 +100,20 @@ func GenHandlerRegister(name string, handlers ...RouteHandler) (HandlerRegister,
 		Handlers: handlers,
 		IdxMap:   handlerIdxMap,
 	}, nil
+}
+func GenDefaultHandlerRegister(prefix string, i any, db *gom.DB) (IHandlerRegister, error) {
+	columnNames, primaryKeys, primaryAuto, columnIdxMap := gom.GetColumns(reflect.ValueOf(i))
+	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
+	if len(columnNames) > 0 {
+		listHandler := GetQueryListHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols)
+		insertHandler := GetInsertHandler(i, db, queryCols)
+		detailHandler := GetQuerySingleHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols)
+		updateHandler := GetUpdateHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols)
+		deleteHandler := GetDeleteHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i))
+		return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler)
+	} else {
+		return nil, errors.New("Struct was empty")
+	}
 }
 
 func RegisterDefaultLite(prefix string, i any, routes gin.IRoutes, db *gom.DB) error {
