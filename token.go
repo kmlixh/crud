@@ -1,4 +1,4 @@
-package AutoCrudGo
+package crud
 
 import (
 	"context"
