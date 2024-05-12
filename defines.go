@@ -20,6 +20,12 @@ type IHandlerRegister interface {
 	AddHandler(routeHandler RouteHandler) error
 }
 type InterceptorFunc func(c *gin.Context, i any) (any, error)
+type ConditionFilterFunc func(c *gin.Context, cnd define.Condition) (define.Condition, error)
+
+func DefaultConditionFunc(c *gin.Context, cnd define.Condition) (define.Condition, error) {
+	cnd = MapToParamCondition(c)
+
+}
 
 func DefaultUnMarshalFunc(c *gin.Context, i any) (any, error) {
 	if err := c.ShouldBind(i); err != nil {
@@ -40,6 +46,11 @@ func (d DefaultRoutePath) String() string {
 	return string(d)
 }
 
+type RouteHandler struct {
+	Path       string
+	HttpMethod string
+	Handlers   []gin.HandlerFunc
+}
 type ConditionParam struct {
 	QueryName string
 	ColName   string
@@ -118,12 +129,6 @@ func (h HandlerRegister) Register(routes gin.IRoutes) error {
 		}
 	}
 	return nil
-}
-
-type RouteHandler struct {
-	Path       string
-	HttpMethod string
-	Handlers   []gin.HandlerFunc
 }
 
 func RegisterHandler(name string, routes gin.IRoutes, handlers ...RouteHandler) error {
