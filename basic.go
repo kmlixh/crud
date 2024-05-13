@@ -161,7 +161,7 @@ func (s Server) ListenAndServe() error {
 	return s.server.ListenAndServe()
 }
 
-func GetConditionMapFromRst(c *gin.Context) (map[string]any, error) {
+func GetMapFromRst(c *gin.Context) (map[string]any, error) {
 	var maps map[string]interface{}
 	var er error
 	if c.Request.Method == "POST" {

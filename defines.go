@@ -19,19 +19,30 @@ type IHandlerRegister interface {
 	AppendHandler(name string, handler gin.HandlerFunc, asFirst bool) error
 	AddHandler(routeHandler RouteHandler) error
 }
-type InterceptorFunc func(c *gin.Context, i any) (any, error)
-type ConditionFilterFunc func(c *gin.Context, cnd define.Condition) (define.Condition, error)
+type InterceptorFunc func(c *gin.Context, i any, cnd define.Condition) (any, define.Condition, error)
 
-func DefaultConditionFunc(c *gin.Context, cnd define.Condition) (define.Condition, error) {
-	cnd = MapToParamCondition(c)
-
+func DefaultUnMarshalFunc(c *gin.Context, i any, cnd define.Condition) (any, define.Condition, error) {
+	if err := c.ShouldBind(i); err != nil {
+		return nil, cnd, err
+	}
+	return i, cnd, nil
+}
+func SetContextEntity(c *gin.Context, entity any) {
+	c.Set("entity", entity)
+}
+func SetContextCondition(c *gin.Context, cnd define.Condition) {
+	c.Set("cnd", cnd)
+}
+func GetContextEntity(c *gin.Context) (any, bool) {
+	return c.Get("entity")
 }
 
-func DefaultUnMarshalFunc(c *gin.Context, i any) (any, error) {
-	if err := c.ShouldBind(i); err != nil {
-		return nil, err
+func GetContextCondition(c *gin.Context) (define.Condition, bool) {
+	i, ok := c.Get("cnd")
+	if ok {
+		return i.(define.Condition), ok
 	}
-	return i, nil
+	return nil, ok
 }
 
 const (
@@ -54,7 +65,7 @@ type RouteHandler struct {
 type ConditionParam struct {
 	QueryName string
 	ColName   string
-	Required  bool
+	define.OrderType
 }
 type HandlerRegister struct {
 	Name     string
@@ -204,7 +215,6 @@ func GenDefaultConditionParamByType(column string, f reflect.StructField) Condit
 	return ConditionParam{
 		QueryName: GetFieldDefaultQueryName(f),
 		ColName:   column,
-		Required:  false,
 	}
 }
 func GetFieldDefaultQueryName(f reflect.StructField) string {
@@ -246,7 +256,15 @@ func GetDeleteHandler(i any, db *gom.DB, queryParam []ConditionParam, beforeComm
 	}
 }
 
-func QueryList(i interface{}, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
+type ConditionFunc func() (define.Condition, error)
+
+func DefaultConditionFunc(queryParam []ConditionParam, c *gin.Context) ConditionFunc {
+	return func() (define.Condition, error) {
+		cnd, _, er := MapToParamCondition(c, queryParam)
+		return cnd, er
+	}
+}
+func QueryList(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		codeMsg := Ok()
 		results := reflect.New(reflect.SliceOf(reflect.TypeOf(i))).Interface()
@@ -294,7 +312,7 @@ func QueryList(i interface{}, db *gom.DB, queryParam []ConditionParam, columns [
 			db.Where(cnd)
 		}
 		if beforeCommitFunc != nil {
-			results, err = beforeCommitFunc(c, results)
+			results, cnd, err = beforeCommitFunc(c, results, cnd)
 			if err != nil {
 				RenderErr2(c, 500, "服务器内部错误："+err.Error())
 				return
@@ -311,13 +329,17 @@ func QueryList(i interface{}, db *gom.DB, queryParam []ConditionParam, columns [
 }
 func QuerySingle(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
+
 		results := reflect.New(reflect.TypeOf(i)).Interface()
+		var err error
+		cnd := gom.CndEmpty()
+		results, cnd, err = beforeCommitFunc(c, results, cnd)
 		cnd, _, err := MapToParamCondition(c, queryParam)
 		if cnd != nil && err == nil {
 			db.Where(cnd)
 		}
 		if beforeCommitFunc != nil {
-			results, err = beforeCommitFunc(c, results)
+
 			if err != nil {
 				RenderErr2(c, 500, "服务器内部错误："+err.Error())
 				return
@@ -416,7 +438,7 @@ func DoDelete(i any, db *gom.DB, param []ConditionParam, beforeCommitFunc Interc
 var operators = []string{"Eq", "Le", "Lt", "Ge", "Gt", "Like", "LikeLeft", "LikeRight", "In", "NotIn", "NotLike", "NotEq"}
 
 func MapToParamCondition(c *gin.Context, queryParam []ConditionParam) (define.Condition, map[string]interface{}, error) {
-	maps, err := GetConditionMapFromRst(c)
+	maps, err := GetMapFromRst(c)
 	hasValMap := make(map[string]string)
 	if err != nil {
 		return nil, nil, err
