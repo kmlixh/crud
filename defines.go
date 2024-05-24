@@ -44,6 +44,12 @@ func GetContextCondition(c *gin.Context) (define.Condition, bool) {
 	}
 	return nil, ok
 }
+func DefaultBindContextToEntity(i any) gin.HandlerFunc {
+	return func(context *gin.Context) {
+		context.ShouldBind(i)
+		SetContextEntity(context, i)
+	}
+}
 
 const (
 	PathList   DefaultRoutePath = "list"
@@ -334,7 +340,7 @@ func QuerySingle(i any, db *gom.DB, queryParam []ConditionParam, columns []strin
 		var err error
 		cnd := gom.CndEmpty()
 		results, cnd, err = beforeCommitFunc(c, results, cnd)
-		cnd, _, err := MapToParamCondition(c, queryParam)
+		cnd, _, err = MapToParamCondition(c, queryParam)
 		if cnd != nil && err == nil {
 			db.Where(cnd)
 		}
