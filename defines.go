@@ -19,7 +19,6 @@ type IHandlerRegister interface {
 	AppendHandler(name string, handler gin.HandlerFunc, asFirst bool) error
 	AddHandler(routeHandler RouteHandler) error
 }
-type InterceptorFunc func(c *gin.Context, i any, cnd define.Condition) (any, define.Condition, error)
 
 func DefaultUnMarshalFunc(c *gin.Context, i any, cnd define.Condition) (any, define.Condition, error) {
 	if err := c.ShouldBind(i); err != nil {
@@ -226,35 +225,35 @@ func GenDefaultConditionParamByType(column string, f reflect.StructField) Condit
 func GetFieldDefaultQueryName(f reflect.StructField) string {
 	return strings.ToLower(f.Name[0:1]) + f.Name[1:]
 }
-func GetQueryListHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) RouteHandler {
+func GetQueryListHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc *gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathList),
 		HttpMethod: "Any",
 		Handlers:   []gin.HandlerFunc{QueryList(i, db, queryParam, columns, beforeCommitFunc)},
 	}
 }
-func GetQuerySingleHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) RouteHandler {
+func GetQuerySingleHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathDetail),
 		HttpMethod: http.MethodGet,
 		Handlers:   []gin.HandlerFunc{QuerySingle(i, db, queryParam, columns, beforeCommitFunc)},
 	}
 }
-func GetInsertHandler(i any, db *gom.DB, columns []string, unMarshalFunc InterceptorFunc, beforeCommitFunc InterceptorFunc) RouteHandler {
+func GetInsertHandler(i any, db *gom.DB, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathAdd),
 		HttpMethod: http.MethodPost,
 		Handlers:   []gin.HandlerFunc{DoInsert(i, db, columns, unMarshalFunc, beforeCommitFunc)},
 	}
 }
-func GetUpdateHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, unMarshalFunc InterceptorFunc, beforeCommitFunc InterceptorFunc) RouteHandler {
+func GetUpdateHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc *gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathUpdate),
 		HttpMethod: http.MethodPost,
 		Handlers:   []gin.HandlerFunc{DoUpdate(i, db, queryParam, columns, unMarshalFunc, beforeCommitFunc)},
 	}
 }
-func GetDeleteHandler(i any, db *gom.DB, queryParam []ConditionParam, beforeCommitFunc InterceptorFunc) RouteHandler {
+func GetDeleteHandler(i any, db *gom.DB, queryParam []ConditionParam, beforeCommitFunc *gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathDelete),
 		HttpMethod: http.MethodPost,
@@ -270,7 +269,7 @@ func DefaultConditionFunc(queryParam []ConditionParam, c *gin.Context) Condition
 		return cnd, er
 	}
 }
-func QueryList(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
+func QueryList(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc *gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		codeMsg := Ok()
 		results := reflect.New(reflect.SliceOf(reflect.TypeOf(i))).Interface()
@@ -333,13 +332,13 @@ func QueryList(i any, db *gom.DB, queryParam []ConditionParam, columns []string,
 		RenderJson(c, codeMsg)
 	}
 }
-func QuerySingle(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
+func QuerySingle(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 
 		results := reflect.New(reflect.TypeOf(i)).Interface()
 		var err error
 		cnd := gom.CndEmpty()
-		results, cnd, err = beforeCommitFunc(c, results, cnd)
+		results, cnd, err = beforeCommitFunc(c)
 		cnd, _, err = MapToParamCondition(c, queryParam)
 		if cnd != nil && err == nil {
 			db.Where(cnd)
@@ -359,7 +358,7 @@ func QuerySingle(i any, db *gom.DB, queryParam []ConditionParam, columns []strin
 		RenderOk(c, results)
 	}
 }
-func DoUpdate(i any, db *gom.DB, param []ConditionParam, columns []string, unMarshalFunc InterceptorFunc, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
+func DoUpdate(i any, db *gom.DB, param []ConditionParam, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc *gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var err error
 		cnd, _, er := MapToParamCondition(c, param)
@@ -396,7 +395,7 @@ func DoUpdate(i any, db *gom.DB, param []ConditionParam, columns []string, unMar
 		RenderOk(c, rs)
 	}
 }
-func DoInsert(i any, db *gom.DB, columns []string, unMarshalFunc InterceptorFunc, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
+func DoInsert(i any, db *gom.DB, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var err error
 		results := reflect.New(reflect.TypeOf(i)).Interface()
@@ -425,7 +424,7 @@ func DoInsert(i any, db *gom.DB, columns []string, unMarshalFunc InterceptorFunc
 		RenderOk(c, rs)
 	}
 }
-func DoDelete(i any, db *gom.DB, param []ConditionParam, beforeCommitFunc InterceptorFunc) gin.HandlerFunc {
+func DoDelete(i any, db *gom.DB, param []ConditionParam, beforeCommitFunc *gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cnd, _, er := MapToParamCondition(c, param)
 		if er != nil {
