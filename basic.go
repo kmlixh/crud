@@ -82,7 +82,7 @@ func RenderErr2(c *gin.Context, code int, msg string) {
 	c.JSON(200, Err2(code, msg))
 }
 
-func Cors(allowList map[string]bool) *gin.HandlerFunc {
+func Cors(allowList map[string]bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if origin := c.Request.Header.Get("Origin"); allowList[origin] {
 			c.Header("Access-Control-Allow-Origin", origin)
