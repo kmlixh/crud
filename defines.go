@@ -8,11 +8,51 @@ import (
 	"github.com/kmlixh/gom/v3/define"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+)
+
+type NameMethods int
+
+func (n NameMethods) Original() int {
+	return int(n)
+}
+
+const (
+	Original NameMethods = iota
+	CamelCase
+	SnakeCase
 )
 
 type DefaultRoutePath string
+
+var prefix = "auto_crud_inject_"
+
+func ToCamelCaseWithRegex(s string) string {
+	// 正则表达式匹配一个或多个下划线，后面跟一个字母
+	regex := regexp.MustCompile(`_+([a-zA-Z])`)
+	// 将每个匹配项中的字母转换为大写
+	return regex.ReplaceAllStringFunc(s, func(sub string) string {
+		return strings.ToUpper(sub[len(sub)-1:])
+	})
+}
+func ToSnakeCase(s string) string {
+	var result []rune
+	for i, r := range s {
+		if unicode.IsUpper(r) {
+			// 如果是大写字母且不是第一个字符，前面加下划线
+			if i > 0 {
+				result = append(result, '_')
+			}
+			result = append(result, unicode.ToLower(r))
+		} else {
+			result = append(result, r)
+		}
+	}
+	return string(result)
+}
 
 type IHandlerRegister interface {
 	Register(routes gin.IRoutes) error
@@ -20,34 +60,126 @@ type IHandlerRegister interface {
 	AddHandler(routeHandler RouteHandler) error
 }
 
-func DefaultUnMarshalFunc(c *gin.Context, i any, cnd define.Condition) (any, define.Condition, error) {
-	if err := c.ShouldBind(i); err != nil {
-		return nil, cnd, err
-	}
-	return i, cnd, nil
+func setContextEntity(c *gin.Context, entity any) {
+	c.Set(prefix+"entity", entity)
 }
-func SetContextEntity(c *gin.Context, entity any) {
-	c.Set("entity", entity)
+func setContextCondition(c *gin.Context, cnd define.Condition) {
+	c.Set(prefix+"cnd", cnd)
 }
-func SetContextCondition(c *gin.Context, cnd define.Condition) {
-	c.Set("cnd", cnd)
+func getContextEntity(c *gin.Context) (any, bool) {
+	return c.Get(prefix + "entity")
 }
-func GetContextEntity(c *gin.Context) (any, bool) {
-	return c.Get("entity")
+func hasEntity(c *gin.Context) bool {
+	_, ok := c.Keys[prefix+"entity"]
+	return ok
 }
 
-func GetContextCondition(c *gin.Context) (define.Condition, bool) {
+func DefaultUnMarshFunc(i any) gin.HandlerFunc {
+	return func(context *gin.Context) {
+		err := context.ShouldBind(i)
+		if err != nil {
+			context.Abort()
+			return
+		}
+		setContextEntity(context, i)
+	}
+}
+func StructToMap(input any) (bool, map[string]string) {
+	// 创建一个空的map用来存储结果
+	result := make(map[string]string)
+
+	// 获取传入结构体的值和类型
+	val := reflect.ValueOf(input)
+	typ := reflect.TypeOf(input)
+
+	// 确保传入的是struct
+	if val.Kind() == reflect.Struct {
+		// 遍历结构体的所有字段
+		for i := 0; i < val.NumField(); i++ {
+			// 获取字段的名称和值的类型
+			field := typ.Field(i)
+			fieldName := field.Name
+			fieldType := field.Type.String()
+
+			// 将字段名称和类型添加到map中
+			result[fieldName] = fieldType
+		}
+	} else {
+		return false, nil
+	}
+
+	return true, result
+}
+func NameToNameMap(methods NameMethods, names ...string) map[string]string {
+
+}
+func UnMarshFunc(i any, nameMap map[string]string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Method
+	}
+}
+func NameMapFrom(i any, methods NameMethods) map[string]string {
+	ok, maps := StructToMap(i)
+	if !ok {
+		panic("input not a Struct")
+	}
+	nameMap := make(map[string]string)
+	for key := range maps {
+		if methods == CamelCase {
+			nameMap[key] = ToCamelCaseWithRegex(key)
+		} else if methods == SnakeCase {
+			nameMap[key] = ToSnakeCase(key)
+		} else {
+			nameMap[key] = key
+		}
+	}
+	return nameMap
+
+}
+func DefaultConditionFunc(i any, methods NameMethods) gin.HandlerFunc {
+	return func(c *gin.Context) {
+
+	}
+}
+func DefaultConditionFunc2(queryParam []ConditionParam) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cnd, _, er := MapToParamCondition(c, queryParam)
+		if er == nil {
+			setContextCondition(c, cnd)
+		} else {
+			c.Abort()
+		}
+	}
+}
+
+func NoneEntityToOperateError(c *gin.Context) {
+	RenderErrs(c, errors.New("no entity find to operate!"))
+}
+func SetContextEntityHandleFunc(i any) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		setContextEntity(c, i)
+	}
+}
+
+func getContextCondition(c *gin.Context) (define.Condition, bool) {
 	i, ok := c.Get("cnd")
 	if ok {
 		return i.(define.Condition), ok
 	}
 	return nil, ok
 }
-func DefaultBindContextToEntity(i any) gin.HandlerFunc {
-	return func(context *gin.Context) {
-		context.ShouldBind(i)
-		SetContextEntity(context, i)
+func getContextDatabase(c *gin.Context) (gom.DB, bool) {
+
+}
+func GetContextError(c *gin.Context) (error, bool) {
+	i, ok := c.Get("error")
+	if ok {
+		return i.(error), ok
 	}
+	return nil, ok
+}
+func SetContextError(c *gin.Context, err error) {
+	c.Set("error", err)
 }
 
 const (
@@ -68,9 +200,9 @@ type RouteHandler struct {
 	Handlers   []gin.HandlerFunc
 }
 type ConditionParam struct {
-	QueryName string
-	ColName   string
-	define.OrderType
+	QueryName  string
+	ColName    string
+	Operations []define.Operation
 }
 type HandlerRegister struct {
 	Name     string
@@ -176,9 +308,9 @@ func GenDefaultHandlerRegister(prefix string, i any, db *gom.DB) (IHandlerRegist
 	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
 	if len(columnNames) > 0 {
 		listHandler := GetQueryListHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols, nil)
-		insertHandler := GetInsertHandler(i, db, queryCols, DefaultUnMarshalFunc, nil)
+		insertHandler := GetInsertHandler(db, queryCols, DefaultUnMarshFunc(i), nil)
 		detailHandler := GetQuerySingleHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols, nil)
-		updateHandler := GetUpdateHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), queryCols, DefaultUnMarshalFunc, nil)
+		updateHandler := GetUpdateHandler(db, GetConditionParam(queryCols, columnIdxMap, i), queryCols, DefaultUnMarshFunc(i), nil)
 		deleteHandler := GetDeleteHandler(i, db, GetConditionParam(queryCols, columnIdxMap, i), nil)
 		return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler)
 	} else {
@@ -197,9 +329,9 @@ func RegisterDefaultLite(prefix string, i any, routes gin.IRoutes, db *gom.DB) e
 }
 func RegisterDefault(prefix string, i any, routes gin.IRoutes, db *gom.DB, queryCols []string, queryDetailCols []string, insertCols []string, updateCols []string, columnFieldMap map[string]string) error {
 	listHandler := GetQueryListHandler(i, db, GetConditionParam(queryCols, columnFieldMap, i), queryCols, nil)
-	insertHandler := GetInsertHandler(i, db, insertCols, DefaultUnMarshalFunc, nil)
+	insertHandler := GetInsertHandler(db, insertCols, DefaultUnMarshFunc(i), nil)
 	detailHandler := GetQuerySingleHandler(i, db, GetConditionParam(queryDetailCols, columnFieldMap, i), queryDetailCols, nil)
-	updateHandler := GetUpdateHandler(i, db, GetConditionParam(updateCols, columnFieldMap, i), updateCols, DefaultUnMarshalFunc, nil)
+	updateHandler := GetUpdateHandler(db, GetConditionParam(updateCols, columnFieldMap, i), updateCols, DefaultUnMarshFunc(i), nil)
 	deleteHandler := GetDeleteHandler(i, db, GetConditionParam(updateCols, columnFieldMap, i), nil)
 	return RegisterHandler(prefix, routes, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler)
 }
@@ -220,12 +352,13 @@ func GenDefaultConditionParamByType(column string, f reflect.StructField) Condit
 	return ConditionParam{
 		QueryName: GetFieldDefaultQueryName(f),
 		ColName:   column,
+		Operations: []define.Operation{define.Eq},
 	}
 }
 func GetFieldDefaultQueryName(f reflect.StructField) string {
 	return strings.ToLower(f.Name[0:1]) + f.Name[1:]
 }
-func GetQueryListHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc *gin.HandlerFunc) RouteHandler {
+func GetQueryListHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathList),
 		HttpMethod: "Any",
@@ -239,37 +372,29 @@ func GetQuerySingleHandler(i any, db *gom.DB, queryParam []ConditionParam, colum
 		Handlers:   []gin.HandlerFunc{QuerySingle(i, db, queryParam, columns, beforeCommitFunc)},
 	}
 }
-func GetInsertHandler(i any, db *gom.DB, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc gin.HandlerFunc) RouteHandler {
+func GetInsertHandler(db *gom.DB, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathAdd),
 		HttpMethod: http.MethodPost,
-		Handlers:   []gin.HandlerFunc{DoInsert(i, db, columns, unMarshalFunc, beforeCommitFunc)},
+		Handlers:   []gin.HandlerFunc{DoInsert(db, columns, unMarshalFunc, beforeCommitFunc)},
 	}
 }
-func GetUpdateHandler(i any, db *gom.DB, queryParam []ConditionParam, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc *gin.HandlerFunc) RouteHandler {
+func GetUpdateHandler(db *gom.DB, queryParam []ConditionParam, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathUpdate),
 		HttpMethod: http.MethodPost,
-		Handlers:   []gin.HandlerFunc{DoUpdate(i, db, queryParam, columns, unMarshalFunc, beforeCommitFunc)},
+		Handlers:   []gin.HandlerFunc{DoUpdate(db, queryParam, columns, unMarshalFunc, beforeCommitFunc)},
 	}
 }
 func GetDeleteHandler(i any, db *gom.DB, queryParam []ConditionParam, beforeCommitFunc *gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
 		Path:       string(PathDelete),
 		HttpMethod: http.MethodPost,
-		Handlers:   []gin.HandlerFunc{DoDelete(i, db, queryParam, beforeCommitFunc)},
+		Handlers:   []gin.HandlerFunc{DoDelete(db, queryParam, beforeCommitFunc)},
 	}
 }
 
-type ConditionFunc func() (define.Condition, error)
-
-func DefaultConditionFunc(queryParam []ConditionParam, c *gin.Context) ConditionFunc {
-	return func() (define.Condition, error) {
-		cnd, _, er := MapToParamCondition(c, queryParam)
-		return cnd, er
-	}
-}
-func QueryList(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc *gin.HandlerFunc) gin.HandlerFunc {
+func QueryList(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		codeMsg := Ok()
 		results := reflect.New(reflect.SliceOf(reflect.TypeOf(i))).Interface()
@@ -317,7 +442,9 @@ func QueryList(i any, db *gom.DB, queryParam []ConditionParam, columns []string,
 			db.Where(cnd)
 		}
 		if beforeCommitFunc != nil {
-			results, cnd, err = beforeCommitFunc(c, results, cnd)
+			setContextEntity(c, results)
+			setContextCondition(c, cnd)
+			beforeCommitFunc(c)
 			if err != nil {
 				RenderErr2(c, 500, "服务器内部错误："+err.Error())
 				return
@@ -335,30 +462,31 @@ func QueryList(i any, db *gom.DB, queryParam []ConditionParam, columns []string,
 func QuerySingle(i any, db *gom.DB, queryParam []ConditionParam, columns []string, beforeCommitFunc gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 
-		results := reflect.New(reflect.TypeOf(i)).Interface()
 		var err error
 		cnd := gom.CndEmpty()
-		results, cnd, err = beforeCommitFunc(c)
+		if beforeCommitFunc != nil {
+			beforeCommitFunc(c)
+		}
 		cnd, _, err = MapToParamCondition(c, queryParam)
 		if cnd != nil && err == nil {
 			db.Where(cnd)
 		}
 		if beforeCommitFunc != nil {
-
+			beforeCommitFunc(c)
 			if err != nil {
 				RenderErr2(c, 500, "服务器内部错误："+err.Error())
 				return
 			}
 		}
-		_, err = db.Select(results, columns...)
+		_, err = db.Select(&i, columns...)
 		if err != nil {
 			RenderErr2(c, 500, "服务器内部错误："+err.Error())
 			return
 		}
-		RenderOk(c, results)
+		RenderOk(c, i)
 	}
 }
-func DoUpdate(i any, db *gom.DB, param []ConditionParam, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc *gin.HandlerFunc) gin.HandlerFunc {
+func DoUpdate(db *gom.DB, param []ConditionParam, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var err error
 		cnd, _, er := MapToParamCondition(c, param)
@@ -369,10 +497,10 @@ func DoUpdate(i any, db *gom.DB, param []ConditionParam, columns []string, unMar
 		if cnd != nil {
 			db.Where(cnd)
 		}
-		results := reflect.New(reflect.TypeOf(i)).Interface()
 		if unMarshalFunc != nil {
-			results, err = unMarshalFunc(c, results)
-			if err != nil {
+			unMarshalFunc(c)
+			_, ok := getContextEntity(c)
+			if !ok {
 				RenderErrs(c, err)
 				return
 			}
@@ -381,27 +509,34 @@ func DoUpdate(i any, db *gom.DB, param []ConditionParam, columns []string, unMar
 			return
 		}
 		if beforeCommitFunc != nil {
-			results, err = beforeCommitFunc(c, results)
+			beforeCommitFunc(c)
+
 			if err != nil {
 				RenderErrs(c, err)
 				return
 			}
 		}
-		rs, er := db.Update(results, columns...)
-		if er != nil {
-			RenderErrs(c, err)
-			return
+		result, ok := getContextEntity(c)
+		if ok {
+			rs, er := db.Update(result, columns...)
+			if er != nil {
+				RenderErrs(c, err)
+				return
+			}
+			RenderOk(c, rs)
+		} else {
+			RenderErrs(c, errors.New("更新失败"))
 		}
-		RenderOk(c, rs)
+
 	}
 }
-func DoInsert(i any, db *gom.DB, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc gin.HandlerFunc) gin.HandlerFunc {
+func DoInsert(db *gom.DB, columns []string, unMarshalFunc gin.HandlerFunc, beforeCommitFunc gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var err error
-		results := reflect.New(reflect.TypeOf(i)).Interface()
 		if unMarshalFunc != nil {
-			results, err = unMarshalFunc(c, results)
-			if err != nil {
+			unMarshalFunc(c)
+			_, ok := getContextEntity(c)
+			if !ok {
 				RenderErrs(c, err)
 				return
 			}
@@ -410,26 +545,37 @@ func DoInsert(i any, db *gom.DB, columns []string, unMarshalFunc gin.HandlerFunc
 			return
 		}
 		if beforeCommitFunc != nil {
-			results, err = beforeCommitFunc(c, results)
+			beforeCommitFunc(c)
 			if err != nil {
 				RenderErrs(c, err)
 				return
 			}
 		}
-		rs, er := db.Insert(results, columns...)
-		if er != nil {
-			RenderErrs(c, err)
-			return
+		result, ok := getContextEntity(c)
+		if ok {
+			rs, er := db.Insert(result, columns...)
+			if er != nil {
+				RenderErrs(c, err)
+				return
+			}
+			RenderOk(c, rs)
+		} else {
+			NoneEntityToOperateError(c)
 		}
-		RenderOk(c, rs)
+
 	}
 }
-func DoDelete(i any, db *gom.DB, param []ConditionParam, beforeCommitFunc *gin.HandlerFunc) gin.HandlerFunc {
+
+func DoDelete(i any, db *gom.DB, beforeDeleteFunc ...gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		cnd, _, er := MapToParamCondition(c, param)
-		if er != nil {
-			RenderErrs(c, er)
+		cnd, ok := getContextCondition(c)
+		if !ok {
+			RenderErrs(c, errors.New("can't get Cnd"))
 			return
+		}
+		i, ok := getContextEntity(c)
+		if !ok {
+
 		}
 		rs, er := db.Where(cnd).Delete(i)
 		if er != nil {
@@ -439,8 +585,28 @@ func DoDelete(i any, db *gom.DB, param []ConditionParam, beforeCommitFunc *gin.H
 		RenderOk(c, rs)
 	}
 }
+func DoQuery() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cnd, ok := getContextCondition(c)
+		if !ok {
+			RenderErrs(c, errors.New("can't get Cnd"))
+			return
+		}
+		i, ok := getContextEntity(c)
+		if !ok {
 
-var operators = []string{"Eq", "Le", "Lt", "Ge", "Gt", "Like", "LikeLeft", "LikeRight", "In", "NotIn", "NotLike", "NotEq"}
+		}
+		rs, er := db.Where(cnd).Delete(i)
+		if er != nil {
+			RenderErrs(c, er)
+			return
+		}
+		RenderOk(c, rs)
+	}
+}
+}
+
+var Operators = []string{"Eq", "Le", "Lt", "Ge", "Gt", "Like", "LikeLeft", "LikeRight", "In", "NotIn", "NotLike", "NotEq"}
 
 func MapToParamCondition(c *gin.Context, queryParam []ConditionParam) (define.Condition, map[string]interface{}, error) {
 	maps, err := GetMapFromRst(c)
@@ -455,7 +621,7 @@ func MapToParamCondition(c *gin.Context, queryParam []ConditionParam) (define.Co
 			if hasOldVal {
 				return nil, nil, errors.New(fmt.Sprintf("u have a query condition like [%s]", oldName))
 			}
-			for _, oper := range operators {
+			for _, oper := range Operators {
 				val, hasVal := maps[param.QueryName+oper]
 				if hasVal {
 					hasValMap[param.ColName] = param.QueryName + oper
