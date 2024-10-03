@@ -178,9 +178,6 @@ func SetConditionParamAsCnd(queryParam []ConditionParam) gin.HandlerFunc {
 	}
 }
 
-func NoneEntityToOperateError(c *gin.Context) {
-	RenderErrs(c, errors.New("no entity find to operate!"))
-}
 func SetContextEntity(i any) gin.HandlerFunc {
 	return SetContextAny("entity", i)
 }
