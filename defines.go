@@ -14,6 +14,16 @@ import (
 	"unicode"
 )
 
+type DefaultRoutePath string
+
+const (
+	PathList   DefaultRoutePath = "list"
+	PathAdd    DefaultRoutePath = "add"
+	PathDetail DefaultRoutePath = "detail"
+	PathUpdate DefaultRoutePath = "update"
+	PathDelete DefaultRoutePath = "delete"
+)
+
 type NameMethods int
 
 func (n NameMethods) Original() int {
@@ -26,7 +36,19 @@ const (
 	SnakeCase
 )
 
-type DefaultRoutePath string
+type PositionOfHandler int
+
+const (
+	AfterOpera PositionOfHandler = iota - 2
+	BeforeOpera
+	AsFirst
+)
+
+type IHandlerRegister interface {
+	Register(routes gin.IRoutes) error
+	AppendHandler(name string, handler gin.HandlerFunc, position PositionOfHandler) error
+	AddHandler(routeHandler RouteHandler) error
+}
 
 var prefix = "auto_crud_inject_"
 
@@ -52,12 +74,6 @@ func ToSnakeCase(s string) string {
 		}
 	}
 	return string(result)
-}
-
-type IHandlerRegister interface {
-	Register(routes gin.IRoutes) error
-	AppendHandler(name string, handler gin.HandlerFunc, asFirst bool) error
-	AddHandler(routeHandler RouteHandler) error
 }
 
 func SetContextEntity(i any) gin.HandlerFunc {
@@ -206,14 +222,6 @@ func GetContextAny(c *gin.Context, name string) (i any, ok bool) {
 	return c.Get(prefix + name)
 }
 
-const (
-	PathList   DefaultRoutePath = "list"
-	PathAdd    DefaultRoutePath = "add"
-	PathDetail DefaultRoutePath = "detail"
-	PathUpdate DefaultRoutePath = "update"
-	PathDelete DefaultRoutePath = "delete"
-)
-
 func (d DefaultRoutePath) String() string {
 	return string(d)
 }
@@ -271,7 +279,7 @@ func (h HandlerRegister) DeleteHandler(name string) error {
 		return nil
 	}
 }
-func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, asFirst bool) error {
+func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, position PositionOfHandler) error {
 	_, ok := h.IdxMap[name]
 	var routeHandler RouteHandler
 	if !ok {
@@ -280,10 +288,18 @@ func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, asF
 		routeHandler = h.Handlers[h.IdxMap[name]]
 
 	}
-	if asFirst {
+	if position == AsFirst {
 		routeHandler.Handlers = append([]gin.HandlerFunc{handler}, routeHandler.Handlers...)
-	} else {
+	} else if position == AfterOpera {
 		routeHandler.Handlers = append(routeHandler.Handlers, handler)
+	} else if position == BeforeOpera || (position > 0 && int(position) < len(routeHandler.Handlers)) {
+		idx := 0
+		if position == BeforeOpera {
+			idx = len(routeHandler.Handlers) - 1
+		} else {
+			idx = int(position)
+		}
+		routeHandler.Handlers = append(routeHandler.Handlers[:idx], append([]gin.HandlerFunc{handler}, routeHandler.Handlers[idx:]...)...)
 	}
 	h.Handlers[h.IdxMap[name]] = routeHandler
 	return nil
