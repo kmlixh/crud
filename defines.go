@@ -60,16 +60,15 @@ type IHandlerRegister interface {
 	AddHandler(routeHandler RouteHandler) error
 }
 
-func setContextEntity(i any) gin.HandlerFunc {
+func SetContextEntity(i any) gin.HandlerFunc {
 	return SetContextAny("entity", i)
 }
-func setContextCondition(cnd define.Condition) gin.HandlerFunc {
-	return SetContextAny("cnd", cnd)
-}
-func getContextEntity(c *gin.Context) (any, bool) {
+
+func GetContextEntity(c *gin.Context) (any, bool) {
 	return c.Get(prefix + "entity")
 }
-func hasEntity(c *gin.Context) bool {
+
+func HasEntity(c *gin.Context) bool {
 	_, ok := c.Keys[prefix+"entity"]
 	return ok
 }
@@ -178,10 +177,6 @@ func SetConditionParamAsCnd(queryParam []ConditionParam) gin.HandlerFunc {
 	}
 }
 
-func SetContextEntity(i any) gin.HandlerFunc {
-	return SetContextAny("entity", i)
-}
-
 func getContextCondition(c *gin.Context) (define.Condition, bool) {
 	i, ok := GetContextAny(c, "cnd")
 	if ok {
@@ -192,7 +187,7 @@ func getContextCondition(c *gin.Context) (define.Condition, bool) {
 func SetContextCondition(cnd define.Condition) gin.HandlerFunc {
 	return SetContextAny("cnd", cnd)
 }
-func getContextDatabase(c *gin.Context) (*gom.DB, bool) {
+func GetContextDatabase(c *gin.Context) (*gom.DB, bool) {
 	i, ok := GetContextAny(c, "db")
 	if ok {
 		return i.(*gom.DB), ok
@@ -337,22 +332,22 @@ func GetAutoGenerateRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegi
 	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
 
 	if len(columnNames) > 0 {
-		listHandler := GetQueryListHandler(setContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols))
-		detailHandler := GetQuerySingleHandler(setContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols))
+		listHandler := GetQueryListHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols))
+		detailHandler := GetQuerySingleHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols))
 		insertHandler := GetInsertHandler(SetContextDatabase(db), DefaultUnMarshFunc(i), SetColumns(queryCols))
 		updateHandler := GetUpdateHandler(SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), SetColumns(append(primaryKeys, columnNames...)), DefaultUnMarshFunc(i))
-		deleteHandler := GetDeleteHandler(setContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)))
+		deleteHandler := GetDeleteHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)))
 		return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler)
 	} else {
 		return nil, errors.New("Struct was empty")
 	}
 }
 func GetRouteHandler2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam) (IHandlerRegister, error) {
-	listHandler := GetQueryListHandler(setContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols))
-	detailHandler := GetQuerySingleHandler(setContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(detailConditionParam), SetColumns(queryDetailCols))
+	listHandler := GetQueryListHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols))
+	detailHandler := GetQuerySingleHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(detailConditionParam), SetColumns(queryDetailCols))
 	insertHandler := GetInsertHandler(SetContextDatabase(db), DefaultUnMarshFunc(i), SetColumns(insertCols))
 	updateHandler := GetUpdateHandler(SetContextDatabase(db), SetConditionParamAsCnd(updateConditionParam), SetColumns(updateCols), DefaultUnMarshFunc(i))
-	deleteHandler := GetDeleteHandler(setContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(deleteConditionParam))
+	deleteHandler := GetDeleteHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(deleteConditionParam))
 	return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler)
 }
 
@@ -405,7 +400,7 @@ func GetRouteHandler(path string, method string, handlers ...gin.HandlerFunc) Ro
 
 func DoDelete() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		db, ok := getContextDatabase(c)
+		db, ok := GetContextDatabase(c)
 		if !ok {
 			panic("can't find database")
 		}
@@ -414,7 +409,7 @@ func DoDelete() gin.HandlerFunc {
 			RenderErrs(c, errors.New("can't get Cnd"))
 			return
 		}
-		i, ok := getContextEntity(c)
+		i, ok := GetContextEntity(c)
 		if !ok {
 			panic("can't find data entity")
 
@@ -429,7 +424,7 @@ func DoDelete() gin.HandlerFunc {
 }
 func DoUpdate() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		db, ok := getContextDatabase(c)
+		db, ok := GetContextDatabase(c)
 		if !ok {
 			panic("can't find database")
 		}
@@ -438,7 +433,7 @@ func DoUpdate() gin.HandlerFunc {
 			RenderErrs(c, errors.New("can't get Cnd"))
 			return
 		}
-		i, ok := getContextEntity(c)
+		i, ok := GetContextEntity(c)
 		if !ok {
 			panic("can't find data entity")
 
@@ -458,7 +453,7 @@ func DoUpdate() gin.HandlerFunc {
 }
 func DoInsert() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		db, ok := getContextDatabase(c)
+		db, ok := GetContextDatabase(c)
 		if !ok {
 			panic("can't find database")
 		}
@@ -467,7 +462,7 @@ func DoInsert() gin.HandlerFunc {
 			RenderErrs(c, errors.New("can't get Cnd"))
 			return
 		}
-		i, ok := getContextEntity(c)
+		i, ok := GetContextEntity(c)
 		if !ok {
 			panic("can't find data entity")
 
@@ -487,7 +482,7 @@ func DoInsert() gin.HandlerFunc {
 }
 func QuerySingle() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		db, ok := getContextDatabase(c)
+		db, ok := GetContextDatabase(c)
 		if !ok {
 			panic("can't find database")
 		}
@@ -497,7 +492,7 @@ func QuerySingle() gin.HandlerFunc {
 			return
 		}
 
-		i, ok := getContextEntity(c)
+		i, ok := GetContextEntity(c)
 		if !ok {
 			panic("can't find data entity")
 		}
@@ -521,13 +516,13 @@ func QuerySingle() gin.HandlerFunc {
 }
 func QueryList() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		i, ok := getContextEntity(c)
+		i, ok := GetContextEntity(c)
 		if !ok {
 			panic("can't find data entity")
 		}
 		rawInfo := gom.GetRawTableInfo(i)
 		results := reflect.New(reflect.SliceOf(reflect.TypeOf(rawInfo.Type))).Interface()
-		db, ok := getContextDatabase(c)
+		db, ok := GetContextDatabase(c)
 		if !ok {
 			panic("can't find database")
 		}
