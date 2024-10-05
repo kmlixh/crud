@@ -24,6 +24,10 @@ const (
 	PathDelete DefaultRoutePath = "delete"
 )
 
+func DoNothingFunc(c *gin.Context) {
+
+}
+
 type NameMethods int
 
 func (n NameMethods) Original() int {
@@ -36,17 +40,17 @@ const (
 	SnakeCase
 )
 
-type PositionOfHandler int
+type HandlerAppendType int
 
 const (
-	AfterOpera PositionOfHandler = iota - 2
-	BeforeOpera
-	AsFirst
+	Before HandlerAppendType = iota - 1
+	Replace
+	After
 )
 
 type IHandlerRegister interface {
 	Register(routes gin.IRoutes) error
-	AppendHandler(name string, handler gin.HandlerFunc, position PositionOfHandler) error
+	AppendHandler(name string, handler gin.HandlerFunc, appendType HandlerAppendType, position HandlerPosition) error
 	AddHandler(routeHandler RouteHandler) error
 }
 
@@ -88,10 +92,35 @@ func HasEntity(c *gin.Context) bool {
 	_, ok := c.Keys[prefix+"entity"]
 	return ok
 }
+func DefaultGenPageFromParam(c *gin.Context) {
+	pageNumt := c.Param("pageNumber")
+	pageNum, er := strconv.Atoi(pageNumt)
+	if er != nil {
+		c.Abort()
+		RenderErrs(c, er)
+		return
+	}
+	SetContextPageNumber(pageNum)(c)
+	pageSizet := c.Param("pageSize")
+	pageSize, er := strconv.Atoi(pageSizet)
+	if er != nil {
+		c.Abort()
+		RenderErrs(c, er)
+		return
+	}
+	SetContextPageSize(pageSize)(c)
+}
 
+func SetContextPageNumber(num int) gin.HandlerFunc {
+	return SetContextAny("pageNum", num)
+}
+
+func SetContextPageSize(size int) gin.HandlerFunc {
+	return SetContextAny("pageSize", size)
+}
 func getContextPageNumber(c *gin.Context) int {
 	pageNumber := 0
-	i, ok := c.Get(prefix + "cnd")
+	i, ok := c.Get(prefix + "pageNum")
 	if ok {
 		pageNumber = i.(int)
 	} else {
@@ -107,11 +136,11 @@ func getContextPageNumber(c *gin.Context) int {
 }
 func getContextPageSize(c *gin.Context) int {
 	pageSize := 0
-	i, ok := c.Get(prefix + "cnd")
+	i, ok := c.Get(prefix + "pageSize")
 	if ok {
 		pageSize = i.(int)
 	} else {
-		pp, er := strconv.Atoi(c.Param("pageNum"))
+		pp, er := strconv.Atoi(c.Param("pageSize"))
 		if er == nil {
 			pageSize = pp
 		}
@@ -294,7 +323,7 @@ func (h HandlerRegister) DeleteHandler(name string) error {
 		return nil
 	}
 }
-func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, position PositionOfHandler) error {
+func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, appendType HandlerAppendType, position HandlerPosition) error {
 	_, ok := h.IdxMap[name]
 	var routeHandler RouteHandler
 	if !ok {
@@ -303,18 +332,21 @@ func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, pos
 		routeHandler = h.Handlers[h.IdxMap[name]]
 
 	}
-	if position == AsFirst {
-		routeHandler.Handlers = append([]gin.HandlerFunc{handler}, routeHandler.Handlers...)
-	} else if position == AfterOpera {
-		routeHandler.Handlers = append(routeHandler.Handlers, handler)
-	} else if position == BeforeOpera || (position > 0 && int(position) < len(routeHandler.Handlers)) {
-		idx := 0
-		if position == BeforeOpera {
-			idx = len(routeHandler.Handlers) - 1
-		} else {
-			idx = int(position)
+	funcs := routeHandler.Handlers[position]
+	if appendType == Before {
+		oldFunc := funcs
+		funcs = func(c *gin.Context) {
+			handler(c)
+			oldFunc(c)
 		}
-		routeHandler.Handlers = append(routeHandler.Handlers[:idx], append([]gin.HandlerFunc{handler}, routeHandler.Handlers[idx:]...)...)
+	} else if appendType == Replace {
+		funcs = handler
+	} else if appendType == After {
+		oldFunc := funcs
+		funcs = func(c *gin.Context) {
+			oldFunc(c)
+			handler(c)
+		}
 	}
 	h.Handlers[h.IdxMap[name]] = routeHandler
 	return nil
@@ -358,27 +390,42 @@ func GenHandlerRegister(name string, handlers ...RouteHandler) (IHandlerRegister
 		IdxMap:   handlerIdxMap,
 	}, nil
 }
+
+type HandlerPosition int
+
+const (
+	Db HandlerPosition = iota
+	Entity
+	UnMarsh
+	Cnd
+	Columns
+	Page
+	OrderBys
+	FinalOpera
+	Renders
+)
+
 func GetAutoRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegister, error) {
 	columnNames, primaryKeys, primaryAuto, columnIdxMap := gom.GetColumns(reflect.ValueOf(i))
 	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
 
 	if len(columnNames) > 0 {
-		listHandler := GetQueryListHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols))
-		detailHandler := GetQuerySingleHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols))
-		insertHandler := GetInsertHandler(SetContextDatabase(db), DefaultUnMarshFunc(i), SetColumns(queryCols))
-		updateHandler := GetUpdateHandler(SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), SetColumns(append(primaryKeys, columnNames...)), DefaultUnMarshFunc(i))
-		deleteHandler := GetDeleteHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)))
+		listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols), DefaultGenPageFromParam, DoNothingFunc)
+		detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols), DoNothingFunc, DoNothingFunc)
+		insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(queryCols), DoNothingFunc, DoNothingFunc)
+		updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), SetColumns(append(primaryKeys, columnNames...)), DoNothingFunc, DoNothingFunc)
+		deleteHandler := GetDeleteHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), DoNothingFunc, DoNothingFunc, DoNothingFunc)
 		return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler)
 	} else {
 		return nil, errors.New("Struct was empty")
 	}
 }
 func GetRouteHandler2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam) (IHandlerRegister, error) {
-	listHandler := GetQueryListHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols))
-	detailHandler := GetQuerySingleHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(detailConditionParam), SetColumns(queryDetailCols))
-	insertHandler := GetInsertHandler(SetContextDatabase(db), DefaultUnMarshFunc(i), SetColumns(insertCols))
-	updateHandler := GetUpdateHandler(SetContextDatabase(db), SetConditionParamAsCnd(updateConditionParam), SetColumns(updateCols), DefaultUnMarshFunc(i))
-	deleteHandler := GetDeleteHandler(SetContextEntity(i), SetContextDatabase(db), SetConditionParamAsCnd(deleteConditionParam))
+	listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols), DefaultGenPageFromParam, DoNothingFunc)
+	detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(detailConditionParam), SetColumns(queryDetailCols), DoNothingFunc, DoNothingFunc)
+	insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(insertCols), DoNothingFunc, DoNothingFunc)
+	updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(updateConditionParam), SetColumns(updateCols), DoNothingFunc, DoNothingFunc)
+	deleteHandler := GetDeleteHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(deleteConditionParam), DoNothingFunc, DoNothingFunc, DoNothingFunc)
 	return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler)
 }
 
@@ -407,19 +454,19 @@ func GetFieldDefaultQueryName(f reflect.StructField) string {
 }
 
 func GetQueryListHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathList), "Any", append(beforeCommitFunc, QueryList())...)
+	return GetRouteHandler(string(PathList), "Any", append(beforeCommitFunc, QueryList(), renderJson)...)
 }
 func GetQuerySingleHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathDetail), http.MethodGet, append(beforeCommitFunc, QuerySingle())...)
+	return GetRouteHandler(string(PathDetail), http.MethodGet, append(beforeCommitFunc, QuerySingle(), renderJson)...)
 }
 func GetInsertHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathAdd), http.MethodPost, append(beforeCommitFunc, DoInsert())...)
+	return GetRouteHandler(string(PathAdd), http.MethodPost, append(beforeCommitFunc, DoInsert(), renderJson)...)
 }
 func GetUpdateHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathUpdate), http.MethodPost, append(beforeCommitFunc, DoUpdate())...)
+	return GetRouteHandler(string(PathUpdate), http.MethodPost, append(beforeCommitFunc, DoUpdate(), renderJson)...)
 }
 func GetDeleteHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathDelete), http.MethodDelete, append(beforeCommitFunc, DoDelete())...)
+	return GetRouteHandler(string(PathDelete), http.MethodDelete, append(beforeCommitFunc, DoDelete(), renderJson)...)
 }
 func GetRouteHandler(path string, method string, handlers ...gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
@@ -450,7 +497,7 @@ func DoDelete() gin.HandlerFunc {
 			RenderErrs(c, er)
 			return
 		}
-		RenderOk(c, rs)
+		SetContextEntity(rs)(c)
 	}
 }
 func DoUpdate() gin.HandlerFunc {
@@ -479,7 +526,7 @@ func DoUpdate() gin.HandlerFunc {
 			RenderErrs(c, er)
 			return
 		}
-		RenderOk(c, rs)
+		SetContextEntity(rs)(c)
 	}
 }
 func DoInsert() gin.HandlerFunc {
@@ -508,7 +555,8 @@ func DoInsert() gin.HandlerFunc {
 			RenderErrs(c, er)
 			return
 		}
-		RenderOk(c, rs)
+		SetContextEntity(rs)(c)
+
 	}
 }
 func QuerySingle() gin.HandlerFunc {
@@ -537,7 +585,7 @@ func QuerySingle() gin.HandlerFunc {
 			RenderErrs(c, er)
 			return
 		}
-		RenderOk(c, result)
+		SetContextEntity(result)(c)
 	}
 }
 func QueryList() gin.HandlerFunc {
@@ -569,10 +617,20 @@ func QueryList() gin.HandlerFunc {
 		}
 		_, er := db.Select(&results, cols...)
 		if er != nil {
+			c.Abort()
 			RenderErrs(c, er)
 			return
 		}
+		SetContextEntity(results)(c)
+	}
+}
+
+func renderJson(c *gin.Context) {
+	results, ok := GetContextEntity(c)
+	if ok {
 		RenderOk(c, results)
+	} else {
+		RenderErr2(c, 500, "can't find result")
 	}
 }
 
