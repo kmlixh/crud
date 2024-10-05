@@ -178,6 +178,21 @@ func NameMapFrom(i any, methods NameMethods) map[string]string {
 	return nameMap
 }
 
+func SetOrderBys(orderBys []define.OrderBy) gin.HandlerFunc {
+	return SetContextAny("orderBys", orderBys)
+}
+func GetOrderBys(c *gin.Context) ([]define.OrderBy, bool) {
+	i, ok := c.Get("orderBys")
+	if ok {
+		return i.([]define.OrderBy), ok
+	}
+	return nil, ok
+}
+func HasEntityOfName(c *gin.Context, name string) bool {
+	_, ok := c.Get(name)
+	return ok
+}
+
 func SetColumns(columns []string) gin.HandlerFunc {
 	return SetContextAny("cols", columns)
 }
@@ -343,7 +358,7 @@ func GenHandlerRegister(name string, handlers ...RouteHandler) (IHandlerRegister
 		IdxMap:   handlerIdxMap,
 	}, nil
 }
-func GetAutoGenerateRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegister, error) {
+func GetAutoRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegister, error) {
 	columnNames, primaryKeys, primaryAuto, columnIdxMap := gom.GetColumns(reflect.ValueOf(i))
 	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
 
@@ -502,27 +517,22 @@ func QuerySingle() gin.HandlerFunc {
 		if !ok {
 			panic("can't find database")
 		}
-		cnd, ok := getContextCondition(c)
-		if !ok {
-			RenderErrs(c, errors.New("can't get Cnd"))
-			return
-		}
-
 		i, ok := GetContextEntity(c)
 		if !ok {
 			panic("can't find data entity")
 		}
+		cnd, ok := getContextCondition(c)
+		if ok {
+			db.Where(cnd)
+		}
 		rawInfo := gom.GetRawTableInfo(i)
 		result := reflect.New(reflect.TypeOf(rawInfo.Type)).Interface()
-		if !ok {
-			panic("can't find data entity")
-		}
 		cols := make([]string, 0)
 		cc, ok := GetContextAny(c, "cols")
 		if !ok {
 			cols = cc.([]string)
 		}
-		_, er := db.Where(cnd).Select(&result, cols...)
+		_, er := db.Select(&result, cols...)
 		if er != nil {
 			RenderErrs(c, er)
 			return
@@ -543,16 +553,21 @@ func QueryList() gin.HandlerFunc {
 			panic("can't find database")
 		}
 		cnd, ok := getContextCondition(c)
-		if !ok {
-			RenderErrs(c, errors.New("can't get Cnd"))
-			return
+		if ok {
+			db.Where(cnd)
+		}
+
+		db.Page(int64(getContextPageNumber(c)), int64(getContextPageSize(c)))
+		orderBys, ok := GetOrderBys(c)
+		if ok {
+			db.OrderBys(orderBys)
 		}
 		cols := make([]string, 0)
 		cc, ok := GetContextAny(c, "cols")
 		if !ok {
 			cols = cc.([]string)
 		}
-		_, er := db.Where(cnd).Page(int64(getContextPageNumber(c)), int64(getContextPageSize(c))).Select(&results, cols...)
+		_, er := db.Select(&results, cols...)
 		if er != nil {
 			RenderErrs(c, er)
 			return
