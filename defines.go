@@ -242,7 +242,9 @@ func SetConditionParamAsCnd(queryParam []ConditionParam) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cnd, _, er := MapToParamCondition(c, queryParam)
 		if er == nil {
-			c.Set(prefix+"cnd", cnd)
+			if cnd != nil {
+				c.Set(prefix+"cnd", cnd)
+			}
 		} else {
 			c.Abort()
 		}
@@ -698,7 +700,10 @@ func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (defi
 			}
 
 		}
-		return cnd, maps, nil
+		if cnd.PayLoads() > 0 {
+			return cnd, maps, nil
+		}
+		return nil, nil, nil
 	} else {
 		return nil, nil, nil
 	}
