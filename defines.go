@@ -497,7 +497,7 @@ func DoDelete() gin.HandlerFunc {
 			panic("can't find database")
 		}
 		cnd, ok := getContextCondition(c)
-		if !ok {
+		if !ok || cnd == nil {
 			RenderErrs(c, errors.New("can't get Cnd"))
 			return
 		}
@@ -521,7 +521,7 @@ func DoUpdate() gin.HandlerFunc {
 			panic("can't find database")
 		}
 		cnd, ok := getContextCondition(c)
-		if !ok {
+		if !ok || cnd == nil {
 			RenderErrs(c, errors.New("can't get Cnd"))
 			return
 		}
@@ -549,11 +549,6 @@ func DoInsert() gin.HandlerFunc {
 		if !ok {
 			panic("can't find database")
 		}
-		cnd, ok := getContextCondition(c)
-		if !ok {
-			RenderErrs(c, errors.New("can't get Cnd"))
-			return
-		}
 		i, ok := GetContextEntity(c)
 		if !ok {
 			panic("can't find data entity")
@@ -564,7 +559,7 @@ func DoInsert() gin.HandlerFunc {
 		if !ok {
 			cols = cc.([]string)
 		}
-		rs, er := db.Where(cnd).Insert(i, cols...)
+		rs, er := db.Insert(i, cols...)
 		if er != nil {
 			RenderErrs(c, er)
 			return
@@ -584,7 +579,7 @@ func QuerySingle() gin.HandlerFunc {
 			panic("can't find data entity")
 		}
 		cnd, ok := getContextCondition(c)
-		if ok {
+		if ok && cnd != nil {
 			db.Where(cnd)
 		}
 		rawInfo := gom.GetRawTableInfo(i)
@@ -615,7 +610,7 @@ func QueryList() gin.HandlerFunc {
 			panic("can't find database")
 		}
 		cnd, ok := getContextCondition(c)
-		if ok {
+		if ok && cnd != nil {
 			db.Where(cnd)
 		}
 		counts, er := db.Table(rawInfo.TableName).Count("*")
