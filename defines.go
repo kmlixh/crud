@@ -601,7 +601,7 @@ func QueryList() gin.HandlerFunc {
 			panic("can't find data entity")
 		}
 		rawInfo := gom.GetRawTableInfo(i)
-		results := reflect.New(reflect.SliceOf(reflect.TypeOf(rawInfo.Type))).Interface()
+		results := reflect.New(reflect.SliceOf(reflect.TypeOf(rawInfo.Type)))
 		db, ok := GetContextDatabase(c)
 		if !ok {
 			panic("can't find database")
@@ -621,13 +621,13 @@ func QueryList() gin.HandlerFunc {
 		if !ok {
 			cols = cc.([]string)
 		}
-		_, er := db.Select(&results, cols...)
+		_, er := db.Select(results, cols...)
 		if er != nil {
 			c.Abort()
 			RenderErrs(c, er)
 			return
 		}
-		SetContextEntity(results)(c)
+		SetContextEntity(results.Interface())(c)
 	}
 }
 
