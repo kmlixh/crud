@@ -40,6 +40,12 @@ const (
 	SnakeCase
 )
 
+type PageInfo struct {
+	PageNum   int64 `json:"page_num"`
+	PageSize  int64 `json:"page_size"`
+	TotalSize int64 `json:"total_size"`
+	Data      any   `json:"data"`
+}
 type HandlerAppendType int
 
 const (
@@ -610,24 +616,27 @@ func QueryList() gin.HandlerFunc {
 		if ok {
 			db.Where(cnd)
 		}
-
-		db.Page(int64(getContextPageNumber(c)), int64(getContextPageSize(c)))
-		orderBys, ok := GetOrderBys(c)
-		if ok {
-			db.OrderBys(orderBys)
-		}
+		counts, er := db.Count("*")
+		pageNum := int64(getContextPageNumber(c))
+		pageSize := int64(getContextPageSize(c))
 		cols := make([]string, 0)
 		cc, ok := GetContextAny(c, "cols")
 		if !ok {
 			cols = cc.([]string)
 		}
-		_, er := db.Select(results, cols...)
+		db.Page(pageNum, pageSize)
+		orderBys, ok := GetOrderBys(c)
+		if ok {
+			db.OrderBys(orderBys)
+		}
+		_, er = db.Select(results, cols...)
 		if er != nil {
 			c.Abort()
 			RenderErrs(c, er)
 			return
 		}
-		SetContextEntity(results.Interface())(c)
+		page := PageInfo{pageNum, pageSize, counts, results.Interface()}
+		SetContextEntity(page)(c)
 	}
 }
 
