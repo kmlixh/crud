@@ -41,10 +41,11 @@ const (
 )
 
 type PageInfo struct {
-	PageNum   int64 `json:"page_num"`
-	PageSize  int64 `json:"page_size"`
-	TotalSize int64 `json:"total_size"`
-	Data      any   `json:"data"`
+	PageNum    int64 `json:"pageNum"`
+	PageSize   int64 `json:"pageSize"`
+	TotalSize  int64 `json:"totalSize"`
+	TotalPages int64 `json:"totalPages"`
+	Data       any   `json:"data"`
 }
 type HandlerAppendType int
 
@@ -632,7 +633,11 @@ func QueryList() gin.HandlerFunc {
 			RenderErrs(c, er)
 			return
 		}
-		page := PageInfo{pageNum, pageSize, counts, results.Interface()}
+		totalPages := counts / pageSize
+		if counts%pageSize > 0 {
+			totalPages++
+		}
+		page := PageInfo{pageNum, pageSize, counts, totalPages, results.Interface()}
 		SetContextEntity(page)(c)
 	}
 }
