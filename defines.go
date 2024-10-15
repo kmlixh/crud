@@ -616,7 +616,7 @@ func QueryList() gin.HandlerFunc {
 		if ok {
 			db.Where(cnd)
 		}
-		counts, er := db.Count("*")
+		counts, er := db.Table(rawInfo.TableName).Count("*")
 		pageNum := int64(getContextPageNumber(c))
 		pageSize := int64(getContextPageSize(c))
 		cols := make([]string, 0)
