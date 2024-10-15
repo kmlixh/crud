@@ -94,6 +94,9 @@ func HasEntity(c *gin.Context) bool {
 }
 func DefaultGenPageFromRstQuery(c *gin.Context) {
 	pageNumt := c.Query("pageNum")
+	if pageNumt == "" {
+		pageNumt = "1"
+	}
 	pageNum, er := strconv.Atoi(pageNumt)
 	if er != nil {
 		c.Abort()
@@ -102,6 +105,9 @@ func DefaultGenPageFromRstQuery(c *gin.Context) {
 	}
 	SetContextPageNumber(pageNum)(c)
 	pageSizet := c.Query("pageSize")
+	if pageSizet == "" {
+		pageSizet = "10"
+	}
 	pageSize, er := strconv.Atoi(pageSizet)
 	if er != nil {
 		c.Abort()
