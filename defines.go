@@ -92,8 +92,8 @@ func HasEntity(c *gin.Context) bool {
 	_, ok := c.Keys[prefix+"entity"]
 	return ok
 }
-func DefaultGenPageFromParam(c *gin.Context) {
-	pageNumt := c.Param("pageNumber")
+func DefaultGenPageFromRstQuery(c *gin.Context) {
+	pageNumt := c.Query("pageNum")
 	pageNum, er := strconv.Atoi(pageNumt)
 	if er != nil {
 		c.Abort()
@@ -101,7 +101,7 @@ func DefaultGenPageFromParam(c *gin.Context) {
 		return
 	}
 	SetContextPageNumber(pageNum)(c)
-	pageSizet := c.Param("pageSize")
+	pageSizet := c.Query("pageSize")
 	pageSize, er := strconv.Atoi(pageSizet)
 	if er != nil {
 		c.Abort()
@@ -410,7 +410,7 @@ func GetAutoRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegister, er
 	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
 
 	if len(columnNames) > 0 {
-		listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols), DefaultGenPageFromParam, DoNothingFunc)
+		listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols), DefaultGenPageFromRstQuery, DoNothingFunc)
 		detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols), DoNothingFunc, DoNothingFunc)
 		insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(queryCols), DoNothingFunc, DoNothingFunc)
 		updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), SetColumns(append(primaryKeys, columnNames...)), DoNothingFunc, DoNothingFunc)
@@ -421,7 +421,7 @@ func GetAutoRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegister, er
 	}
 }
 func GetRouteHandler2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam) (IHandlerRegister, error) {
-	listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols), DefaultGenPageFromParam, DoNothingFunc)
+	listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols), DefaultGenPageFromRstQuery, DoNothingFunc)
 	detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(detailConditionParam), SetColumns(queryDetailCols), DoNothingFunc, DoNothingFunc)
 	insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(insertCols), DoNothingFunc, DoNothingFunc)
 	updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(updateConditionParam), SetColumns(updateCols), DoNothingFunc, DoNothingFunc)
