@@ -14,6 +14,7 @@ const (
 	PathUpdate      DefaultRoutePath = "update"
 	PathDelete      DefaultRoutePath = "delete"
 	PathTableStruct DefaultRoutePath = "tableStruct"
+	TableConfig     DefaultRoutePath = "tableConfig"
 )
 
 func DoNothingFunc(c *gin.Context) {
