@@ -1,5 +1,6 @@
 package crud
 
+import "C"
 import (
 	"errors"
 	"fmt"
@@ -344,7 +345,7 @@ func GetAutoRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegister, er
 		updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), SetColumns(append(primaryKeys, columnNames...)), DoNothingFunc, DoNothingFunc)
 		deleteHandler := GetDeleteHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), DoNothingFunc, DoNothingFunc, DoNothingFunc)
 		tableStructHandler := GetTableStructHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc)
-		return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler, tableStructHandler)
+		return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler, tableStructHandler, GetAutoTableViewRouteHandler(prefix, db, i))
 	} else {
 		return nil, errors.New("Struct was empty")
 	}
@@ -356,7 +357,7 @@ func GetRouteHandler2(prefix string, i any, db *gom.DB, queryCols []string, quer
 	updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(updateConditionParam), SetColumns(updateCols), DoNothingFunc, DoNothingFunc)
 	deleteHandler := GetDeleteHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(deleteConditionParam), DoNothingFunc, DoNothingFunc, DoNothingFunc)
 	tableStructHandler := GetTableStructHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc)
-	return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler, tableStructHandler)
+	return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler, tableStructHandler, GetAutoTableViewRouteHandler(prefix, db, i))
 }
 
 func GetConditionParam(columns []string, columnFieldMap map[string]string, i any) []ConditionParam {
@@ -656,13 +657,57 @@ func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (defi
 	}
 }
 
-func AutoTableViewRouterHandler(path string, db *gom.DB, i any) (r RouteHandler, e error) {
-	columnNames, primaryKeys, primaryAuto, columnIdxMap := gom.GetColumns(reflect.ValueOf(i))
-	tablStruct, er := db.GetTableStruct2(i)
-	cols := make([]ColumnInfo, 0)
-	for colName := range columnNames {
-
+func AutoTableViewHandler(name string, db *gom.DB, i any) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tableInfo, e := GetDefaultTableInfo(name, db, i)
+		if e != nil {
+			c.Abort()
+			RenderErrs(c, e)
+			return
+		}
+		SetContextEntity(tableInfo)(c)
 	}
-	r = GetRouteHandler(path, http.MethodGet)
-
+}
+func GetDefaultTableInfo(name string, db *gom.DB, i any) (TableInfo, error) {
+	v := reflect.ValueOf(i)
+	_, _, _, columnIdxMap := gom.GetColumns(v)
+	tableStruct, e := db.GetTableStruct2(i)
+	if e != nil {
+		return TableInfo{}, e
+	}
+	tableCols := tableStruct.(define.TableStruct).Columns
+	cols := make([]ColumnInfo, 0)
+	for _, cc := range tableCols {
+		if fieldName, ok := columnIdxMap[cc.ColumnName]; ok {
+			col := ColumnInfo{
+				Name:          cc.ColumnName,
+				Title:         cc.Comment,
+				DateType:      fieldName,
+				Constraint:    Constraint{},
+				Options:       nil,
+				ColumnVisible: true,
+				Searchable:    false,
+				Editable:      cc.PrimaryAuto || cc.Primary,
+			}
+			cols = append(cols, col)
+		} else {
+			return TableInfo{}, errors.New("[" + cc.ColumnName + "] can't found In [" + v.Type().Name() + "]")
+		}
+	}
+	tableInfo := TableInfo{
+		Name:    name,
+		Title:   tableStruct.GetTableComment(),
+		Columns: cols,
+	}
+	return tableInfo, nil
+}
+func GetAutoTableViewRouteHandler(name string, db *gom.DB, i any) RouteHandler {
+	return GetRouteHandler(name, "any", AutoTableViewHandler(name, db, i), func(c *gin.Context) {
+		method := c.Request.Method
+		if method == "JSONP" {
+			RenderJSONP(c)
+		} else {
+			RenderJSON(c)
+		}
+	})
 }

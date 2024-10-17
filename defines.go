@@ -82,24 +82,26 @@ const (
 )
 
 type TableInfo struct {
-	Name  string
-	Title string
+	Name    string
+	Title   string
+	Columns []ColumnInfo
 }
 type ColumnInfo struct {
-	Name       string
-	Title      string
-	Searchable bool
-	Editable   bool
-	Constraint Constraint
+	Name          string
+	Title         string
+	DateType      string
+	Constraint    Constraint
+	Options       []Option
+	ColumnVisible bool
+	Searchable    bool
+	Editable      bool
 }
 type Constraint struct {
-	DateType     string
 	InputType    string
 	StepValue    string
 	DefaultValue string
 	MinValue     string
 	MaxValue     string
-	Options      []Option
 }
 type Option struct {
 	Title string
