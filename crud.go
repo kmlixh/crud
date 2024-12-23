@@ -4,15 +4,16 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/kmlixh/gom/v3"
-	"github.com/kmlixh/gom/v3/define"
 	"net/http"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/gin-gonic/gin"
+	"github.com/kmlixh/gom/v3"
+	"github.com/kmlixh/gom/v3/define"
 )
 
 var prefix = "auto_crud_inject_"
@@ -310,7 +311,7 @@ func (h HandlerRegister) Register(routes gin.IRoutes) error {
 		return errors.New("route handler could not be empty or nil")
 	}
 	for _, handler := range h.Handlers {
-		if handler.HttpMethod != "Any" {
+		if strings.ToLower(handler.HttpMethod) != "any" {
 			routes.Handle(handler.HttpMethod, h.Name+"/"+handler.Path, handler.Handlers...)
 		} else {
 			routes.Any(h.Name+"/"+handler.Path, handler.Handlers...)
@@ -335,7 +336,7 @@ func GenHandlerRegister(name string, handlers ...RouteHandler) (IHandlerRegister
 }
 
 func GetAutoRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegister, error) {
-	columnNames, primaryKeys, primaryAuto, columnIdxMap := gom.GetColumns(reflect.ValueOf(i))
+	columnNames, primaryKeys, primaryAuto, columnIdxMap := gom.GetColumns(reflect.Indirect(reflect.ValueOf(i)))
 	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
 
 	if len(columnNames) > 0 {
@@ -638,9 +639,9 @@ func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (defi
 					case "LikeRight":
 						cnd.LikeIgnoreEnd(param.ColName, val)
 					case "In":
-						cnd.In(param.ColName, gom.UnZipSlice(val)...)
+						cnd.In(param.ColName, UnZipSlice(val)...)
 					case "NotIn":
-						cnd.NotIn(param.ColName, gom.UnZipSlice(val)...)
+						cnd.NotIn(param.ColName, UnZipSlice(val)...)
 					case "NotLike":
 						cnd.NotLike(param.ColName, val)
 					}
@@ -710,4 +711,247 @@ func GetAutoTableViewRouteHandler(name string, db *gom.DB, i any) RouteHandler {
 			RenderJSON(c)
 		}
 	})
+}
+
+// TableRouteInfo 定义表路由信息
+type TableRouteInfo struct {
+	TableName      string            // 数据库表名
+	RoutePath      string            // 路由路径
+	PrimaryKeys    []string          // 主键列表
+	ColumnNames    []string          // 列名列表
+	QueryParams    map[string]string // 查询参数映射
+	ExcludeColumns []string          // 排除的列
+}
+
+// GetTableRouteHandler 根据表信息自动生成CRUD路由处理器
+func GetTableRouteHandler(db *gom.DB, info TableRouteInfo) (IHandlerRegister, error) {
+	// 验证必要参数
+	if info.TableName == "" || info.RoutePath == "" {
+		return nil, errors.New("table name and route path are required")
+	}
+
+	// 如果未指定列,则获取表的所有列
+	if len(info.ColumnNames) == 0 {
+		tableStruct, err := db.GetTableStruct(info.TableName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get table columns: %v", err)
+		}
+
+		// Extract column names from TableStruct
+		tableCols := tableStruct.(define.TableStruct).Columns
+		for _, col := range tableCols {
+			if !contains(info.ExcludeColumns, col.ColumnName) {
+				info.ColumnNames = append(info.ColumnNames, col.ColumnName)
+			}
+		}
+	}
+
+	// 如果未指定主键,使用id作为默认主键
+	if len(info.PrimaryKeys) == 0 {
+		info.PrimaryKeys = []string{"id"}
+	}
+
+	// 生成各个处理器
+	listHandler := GetTableListHandler(db, info)
+	detailHandler := GetTableDetailHandler(db, info)
+	insertHandler := GetTableInsertHandler(db, info)
+	updateHandler := GetTableUpdateHandler(db, info)
+	deleteHandler := GetTableDeleteHandler(db, info)
+
+	return GenHandlerRegister(info.RoutePath,
+		listHandler,
+		detailHandler,
+		insertHandler,
+		updateHandler,
+		deleteHandler,
+	)
+}
+
+// GetTableListHandler 生成列表查询处理器
+func GetTableListHandler(db *gom.DB, info TableRouteInfo) RouteHandler {
+	return GetRouteHandler(string(PathList), http.MethodGet,
+		SetContextDatabase(db),
+		DefaultGenPageFromRstQuery,
+		func(c *gin.Context) {
+			query := db.Table(info.TableName)
+
+			// 处理查询条件
+			if params, err := GetMapFromRst(c); err == nil {
+				for queryName, colName := range info.QueryParams {
+					if val, exists := params[queryName]; exists {
+						query = query.Where(gom.CndEq(colName, val))
+					}
+				}
+			}
+
+			// 分页查询
+			pageNum := getContextPageNumber(c)
+			pageSize := getContextPageSize(c)
+			query = query.Page(int64(pageNum), int64(pageSize))
+
+			// 执行查询
+			var results []map[string]interface{}
+			total, err := query.Select(&results, info.ColumnNames...)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
+			totalInt64, ok := total.(int64)
+			if !ok {
+				RenderErrs(c, errors.New("invalid total count type"))
+				return
+			}
+
+			// 返回分页数据
+			totalPages := totalInt64 / int64(pageSize)
+			if totalInt64%int64(pageSize) > 0 {
+				totalPages++
+			}
+
+			SetContextEntity(PageInfo{
+				PageNum:    int64(pageNum),
+				PageSize:   int64(pageSize),
+				TotalSize:  totalInt64,
+				TotalPages: totalPages,
+				Data:       results,
+			})(c)
+		},
+		RenderJSON,
+	)
+}
+
+// GetTableDetailHandler 生成详情查询处理器
+func GetTableDetailHandler(db *gom.DB, info TableRouteInfo) RouteHandler {
+	return GetRouteHandler(string(PathDetail), http.MethodGet,
+		SetContextDatabase(db),
+		func(c *gin.Context) {
+			query := db.Table(info.TableName)
+
+			// 处理主键条件
+			for _, pk := range info.PrimaryKeys {
+				if val := c.Query(pk); val != "" {
+					query = query.Where(gom.CndEq(pk, val))
+				}
+			}
+
+			// 执行查询
+			var result map[string]interface{}
+			_, err := query.Select(&result, info.ColumnNames...)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
+
+			SetContextEntity(result)(c)
+		},
+		RenderJSON,
+	)
+}
+
+// GetTableInsertHandler 生成新增处理器
+func GetTableInsertHandler(db *gom.DB, info TableRouteInfo) RouteHandler {
+	return GetRouteHandler(string(PathAdd), http.MethodPost,
+		SetContextDatabase(db),
+		func(c *gin.Context) {
+			// 获取请求数据
+			data, err := GetMapFromRst(c)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
+
+			// 执行插入
+			result, err := db.Table(info.TableName).Insert(data)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
+
+			SetContextEntity(result)(c)
+		},
+		RenderJSON,
+	)
+}
+
+// GetTableUpdateHandler 生成更新处理器
+func GetTableUpdateHandler(db *gom.DB, info TableRouteInfo) RouteHandler {
+	return GetRouteHandler(string(PathUpdate), http.MethodPost,
+		SetContextDatabase(db),
+		func(c *gin.Context) {
+			// 获取请求数据
+			data, err := GetMapFromRst(c)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
+
+			query := db.Table(info.TableName)
+
+			// 处理主键条件
+			for _, pk := range info.PrimaryKeys {
+				if val, exists := data[pk]; exists {
+					query = query.Where(gom.CndEq(pk, val))
+					delete(data, pk) // 从更新数据中移除主键
+				}
+			}
+
+			// 执行更新
+			result, err := query.Update(data)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
+
+			SetContextEntity(result)(c)
+		},
+		RenderJSON,
+	)
+}
+
+// GetTableDeleteHandler 生成删除处理器
+func GetTableDeleteHandler(db *gom.DB, info TableRouteInfo) RouteHandler {
+	return GetRouteHandler(string(PathDelete), http.MethodDelete,
+		SetContextDatabase(db),
+		func(c *gin.Context) {
+			query := db.Table(info.TableName)
+
+			// 处理主键条件
+			for _, pk := range info.PrimaryKeys {
+				if val := c.Query(pk); val != "" {
+					query = query.Where(gom.CndEq(pk, val))
+				}
+			}
+
+			// 执行删除
+			result, err := query.Delete(nil)
+			if err != nil {
+				RenderErrs(c, err)
+				return
+			}
+
+			SetContextEntity(result)(c)
+		},
+		RenderJSON,
+	)
+}
+
+// 工具函数:检查slice中是否包含指定值
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+func UnZipSlice(val interface{}) []interface{} {
+	switch v := val.(type) {
+	case []interface{}:
+		return v
+	case string:
+		return []interface{}{v}
+	default:
+		return []interface{}{val}
+	}
 }
