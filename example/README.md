@@ -65,71 +65,88 @@ go run main.go
 
 ## API 文档
 
-### 用户管理
+### 用户 API
 
-#### 获取用户列表
-- 请求：`GET /api/users?pageNum=1&pageSize=10`
-- 支持的查询参数：
-  - name: 用户名匹配
-  - email: 邮箱匹配
-  - status: 状态过滤
-  - name_like: 用户名模糊匹配
-  - email_like: 邮箱模糊匹配
-  - created_gte: 创建时间大于等于
-  - created_lte: 创建时间小于等于
-  - status_in: 状态列表过滤
+#### 列出用户
+```http
+GET /api/users?pageNum=1&pageSize=10
+```
+
+支持的查询参数：
+- `pageNum`: 页码（默认 1）
+- `pageSize`: 每页大小（默认 10）
+- `orderBy`: 排序字段，多个字段用逗号分隔，前缀 `-` 表示降序
+- `username_like`: 用户名模糊搜索
+- `email_like`: 邮箱模糊搜索
+- `status`: 状态过滤
+- `created_at_gte`: 创建时间大于等于
+- `created_at_lt`: 创建时间小于
 
 #### 获取单个用户
-- 请求：`GET /api/users/:id`
+```http
+GET /api/users/:id
+```
 
 #### 创建用户
-- 请求：`POST /api/users`
-- 请求体：
-```json
+```http
+POST /api/users
+Content-Type: application/json
+
 {
-    "username": "test_user",
+    "username": "newuser",
     "password": "123456",
-    "email": "test@example.com",
+    "email": "newuser@example.com",
     "status": 1
 }
 ```
 
 #### 更新用户
-- 请求：`PUT /api/users/:id`
-- 请求体：
-```json
+```http
+PUT /api/users/:id
+Content-Type: application/json
+
 {
-    "username": "updated_user",
+    "username": "updateduser",
     "email": "updated@example.com",
     "status": 1
 }
 ```
 
 #### 删除用户
-- 请求：`DELETE /api/users/:id`
+```http
+DELETE /api/users/:id
+```
 
-### 文章管理
+### 文章 API
 
-#### 获取文章列��
-- 请求：`GET /api/articles?pageNum=1&pageSize=10`
-- 支持的查询参数：
-  - title: 标题匹配
-  - user_id: 作者ID过滤
-  - status: 状态过滤
-  - title_like: 标题模糊匹配
-  - created_gte: 创建时间大于等于
-  - created_lte: 创建时间小于等于
-  - status_in: 状态列表过滤
+#### 列出文章
+```http
+GET /api/articles?pageNum=1&pageSize=10
+```
+
+支持的查询参数：
+- `pageNum`: 页码（默认 1）
+- `pageSize`: 每页大小（默认 10）
+- `orderBy`: 排序字段，多个字段用逗号分隔，前缀 `-` 表示降序
+- `title_like`: 标题模糊搜索
+- `content_like`: 内容模糊搜索
+- `user_id`: 作者ID过滤
+- `status`: 状态过滤
+- `created_at_gte`: 创建时间大于等于
+- `created_at_lt`: 创建时间小于
 
 #### 获取单个文章
-- 请求：`GET /api/articles/:id`
+```http
+GET /api/articles/:id
+```
 
 #### 创建文章
-- 请求：`POST /api/articles`
-- 请求体：
-```json
+```http
+POST /api/articles
+Content-Type: application/json
+
 {
-    "title": "Test Article",
+    "title": "New Article",
     "content": "Article content",
     "user_id": 1,
     "status": 1
@@ -137,9 +154,10 @@ go run main.go
 ```
 
 #### 更新文章
-- 请求：`PUT /api/articles/:id`
-- 请求体：
-```json
+```http
+PUT /api/articles/:id
+Content-Type: application/json
+
 {
     "title": "Updated Article",
     "content": "Updated content",
@@ -148,4 +166,33 @@ go run main.go
 ```
 
 #### 删除文章
-- 请求：`DELETE /api/articles/:id` 
+```http
+DELETE /api/articles/:id
+```
+
+## 响应格式
+
+所有 API 响应都使用统一的 JSON 格式：
+
+```json
+{
+    "code": 0,       // 状态码：0-成功，非0-失败
+    "message": "",   // 错误消息（仅在失败时有值）
+    "data": {}       // 响应数据
+}
+```
+
+分页查询的响应格式：
+
+```json
+{
+    "code": 0,
+    "data": {
+        "pageNum": 1,        // 当前页码
+        "pageSize": 10,      // 每页大小
+        "total": 100,        // 总记录数
+        "totalPages": 10,    // 总页数
+        "data": []           // 数据列表
+    }
+}
+``` 

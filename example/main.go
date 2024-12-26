@@ -34,7 +34,7 @@ type Article struct {
 
 func main() {
 	// 初始化数据库连接
-	db, err := gom.Open("mysql", "root:123456@tcp(localhost:3306)/test?charset=utf8mb4&parseTime=True&loc=Local")
+	db, err := gom.Open("mysql", "root:123456@tcp(localhost:3306)/test?charset=utf8mb4&parseTime=True&loc=Local", false)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -42,35 +42,21 @@ func main() {
 	// 初始化 Gin 引擎
 	engine := gin.Default()
 
-	// 注册用户 CRUD 路由（使用选项模式）
-	userConfig := crud.NewConfig("/api/users", User{},
-		crud.WithQueryFields("id", "username", "email", "status", "created_at", "updated_at"),
-		crud.WithUpdateFields("username", "email", "status"),
-		crud.WithCreateFields("username", "password", "email", "status"),
-		crud.WithQueryMapping(map[string]string{
-			"name":        "username",
-			"email":       "email",
-			"status":      "status",
-			"name_like":   "username",
-			"email_like":  "email",
-			"created_at":  "created_at",
-			"status_in":   "status",
-			"created_gte": "created_at",
-			"created_lte": "created_at",
-		}),
-	)
-	if err := crud.RegisterCrud(engine, db, userConfig); err != nil {
-		log.Fatalf("Failed to register user CRUD routes: %v", err)
-	}
+	// 注册用户 CRUD 路由
+	crud.Register(engine, db, User{}, crud.Options{
+		PathPrefix:    "/api/users",
+		QueryFields:   []string{"id", "username", "email", "status", "created_at"},
+		UpdateFields:  []string{"username", "email", "status"},
+		CreateFields:  []string{"username", "password", "email", "status"},
+		ExcludeFields: []string{"password"}, // 查询时排除密码字段
+	})
 
 	// 注册文章 CRUD 路由（使用默认配置）
-	articleConfig := crud.GetDefaultConfig("/api/articles", Article{})
-	// 可以在获取默认配置后再修改特定字段
-	articleConfig.UpdateFields = []string{"title", "content", "status"}
-	articleConfig.CreateFields = []string{"title", "content", "user_id", "status"}
-	if err := crud.RegisterCrud(engine, db, articleConfig); err != nil {
-		log.Fatalf("Failed to register article CRUD routes: %v", err)
-	}
+	crud.Register(engine, db, Article{}, crud.Options{
+		PathPrefix:   "/api/articles",
+		UpdateFields: []string{"title", "content", "status"},
+		CreateFields: []string{"title", "content", "user_id", "status"},
+	})
 
 	// 启动服务器
 	if err := engine.Run(":8080"); err != nil {
