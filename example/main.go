@@ -34,7 +34,7 @@ type Article struct {
 
 func main() {
 	// 初始化数据库连接
-	db, err := gom.Open("mysql", "root:123456@tcp(localhost:3306)/test?charset=utf8mb4&parseTime=True&loc=Local", false)
+	db, err := gom.Open("mysql", "root:123456@tcp(192.168.110.249:3306)/test?charset=utf8mb4&parseTime=True&loc=Local", true)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}

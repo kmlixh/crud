@@ -10,6 +10,9 @@
 - 支持条件过滤
 - 支持字段排序
 - 支持字段过滤
+- 统一的 POST 操作（仅用于数据修改）
+- Save 操作支持创建和更新
+- 查询和删除使用 GET 操作
 
 ## 数据库设计
 
@@ -87,22 +90,31 @@ GET /api/users?pageNum=1&pageSize=10
 GET /api/users/:id
 ```
 
-#### 创建用户
+#### 创建或更新用户
 ```http
-POST /api/users
+POST /api/users/save
 Content-Type: application/json
 
+// 创建用户
 {
     "username": "newuser",
     "password": "123456",
     "email": "newuser@example.com",
     "status": 1
 }
+
+// 更新用户
+{
+    "id": 1,
+    "username": "updateduser",
+    "email": "updated@example.com",
+    "status": 1
+}
 ```
 
 #### 更新用户
 ```http
-PUT /api/users/:id
+POST /api/users/update/:id
 Content-Type: application/json
 
 {
@@ -114,7 +126,7 @@ Content-Type: application/json
 
 #### 删除用户
 ```http
-DELETE /api/users/:id
+GET /api/users/delete/:id
 ```
 
 ### 文章 API
@@ -140,22 +152,31 @@ GET /api/articles?pageNum=1&pageSize=10
 GET /api/articles/:id
 ```
 
-#### 创建文章
+#### 创建或更新文章
 ```http
-POST /api/articles
+POST /api/articles/save
 Content-Type: application/json
 
+// 创建文章
 {
     "title": "New Article",
     "content": "Article content",
     "user_id": 1,
     "status": 1
 }
+
+// 更新文章
+{
+    "id": 1,
+    "title": "Updated Article",
+    "content": "Updated content",
+    "status": 1
+}
 ```
 
 #### 更新文章
 ```http
-PUT /api/articles/:id
+POST /api/articles/update/:id
 Content-Type: application/json
 
 {
@@ -167,7 +188,7 @@ Content-Type: application/json
 
 #### 删除文章
 ```http
-DELETE /api/articles/:id
+GET /api/articles/delete/:id
 ```
 
 ## 响应格式

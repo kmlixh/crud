@@ -11,8 +11,8 @@ type Handler interface {
 	List(c *gin.Context)
 	// Get 获取单条记录
 	Get(c *gin.Context)
-	// Create 创建记录
-	Create(c *gin.Context)
+	// Save 创建或更新记录
+	Save(c *gin.Context)
 	// Update 更新记录
 	Update(c *gin.Context)
 	// Delete 删除记录
@@ -75,10 +75,13 @@ func Register(router gin.IRouter, db *gom.DB, model interface{}, opts Options) {
 	// 注册路由
 	group := router.Group(opts.PathPrefix)
 	{
+		// 查询和删除操作使用 GET
 		group.GET("", h.List)
 		group.GET("/:id", h.Get)
-		group.POST("", h.Create)
-		group.PUT("/:id", h.Update)
-		group.DELETE("/:id", h.Delete)
+		group.GET("/delete/:id", h.Delete)
+
+		// 其他操作使用 POST
+		group.POST("/save", h.Save)         // 创建/更新
+		group.POST("/update/:id", h.Update) // 更新
 	}
 }

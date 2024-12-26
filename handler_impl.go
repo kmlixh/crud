@@ -155,8 +155,8 @@ func (h *handlerImpl) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, success(data))
 }
 
-// Create 创建记录
-func (h *handlerImpl) Create(c *gin.Context) {
+// Save 创建或更新记录
+func (h *handlerImpl) Save(c *gin.Context) {
 	// 获取请求数据
 	var data map[string]interface{}
 	if err := c.ShouldBindJSON(&data); err != nil {
@@ -164,23 +164,46 @@ func (h *handlerImpl) Create(c *gin.Context) {
 		return
 	}
 
-	// 过滤字段
-	filteredData := make(map[string]interface{})
-	for _, field := range h.getCreateFields() {
-		if value, exists := data[field]; exists {
-			filteredData[field] = value
+	// 检查是否有 ID
+	var id interface{}
+	var exists bool
+	if id, exists = data[h.opts.PrimaryKey]; exists && id != nil && id != "" && id != 0 {
+		// 更新记录
+		chain := h.db.Chain().From(h.model).Where(h.opts.PrimaryKey, "=", id)
+		for _, field := range h.getUpdateFields() {
+			if value, exists := data[field]; exists {
+				chain = chain.Set(field, value)
+			}
 		}
-	}
 
-	// 执行插入
-	result, err := h.db.Chain().From(h.model).Values(filteredData).Save()
-	if err != nil {
-		c.JSON(http.StatusOK, fail(err))
-		return
-	}
+		// 执行更新
+		result, err := chain.Update()
+		if err != nil {
+			c.JSON(http.StatusOK, fail(err))
+			return
+		}
 
-	// 返回结果
-	c.JSON(http.StatusOK, success(result))
+		// 返回结果
+		c.JSON(http.StatusOK, success(result))
+	} else {
+		// 创建记录
+		filteredData := make(map[string]interface{})
+		for _, field := range h.getCreateFields() {
+			if value, exists := data[field]; exists {
+				filteredData[field] = value
+			}
+		}
+
+		// 执行插入
+		result, err := h.db.Chain().From(h.model).Values(filteredData).Save()
+		if err != nil {
+			c.JSON(http.StatusOK, fail(err))
+			return
+		}
+
+		// 返回结果
+		c.JSON(http.StatusOK, success(result))
+	}
 }
 
 // Update 更新记录
