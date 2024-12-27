@@ -41,7 +41,7 @@ type Crud struct {
 }
 
 // New 创建新的Crud实例
-func New(db *gom.DB, entity interface{}, tableName string) *Crud {
+func New(db *gom.DB, entity interface{}, tableName string, defaultHandlers ...string) *Crud {
 	crud := &Crud{
 		db:        db,
 		entity:    entity,
@@ -49,42 +49,51 @@ func New(db *gom.DB, entity interface{}, tableName string) *Crud {
 		handlers:  make(map[string]ItemHandler),
 	}
 
-	// 注册默认处理器
-	crud.AddHandler(LIST, http.MethodGet, ItemHandler{
-		Path:    "/list",
-		Method:  http.MethodGet,
-		Handler: crud.List,
-	})
+	// 如果没有指定默认处理器，则创建所有默认处理器
+	if len(defaultHandlers) == 0 {
+		defaultHandlers = []string{LIST, PAGE, SINGLE, SAVE, UPDATE, DELETE}
+	}
 
-	crud.AddHandler(PAGE, http.MethodGet, ItemHandler{
-		Path:    "/page",
-		Method:  http.MethodGet,
-		Handler: crud.List,
-	})
+	// 创建指定的默认处理器
+	handlerMap := map[string]ItemHandler{
+		LIST: {
+			Path:    "/list",
+			Method:  http.MethodGet,
+			Handler: crud.List,
+		},
+		PAGE: {
+			Path:    "/page",
+			Method:  http.MethodGet,
+			Handler: crud.List,
+		},
+		SINGLE: {
+			Path:    "/detail/:id",
+			Method:  http.MethodGet,
+			Handler: crud.Get,
+		},
+		SAVE: {
+			Path:    "/save",
+			Method:  http.MethodPost,
+			Handler: crud.Create,
+		},
+		UPDATE: {
+			Path:    "/update/:id",
+			Method:  http.MethodPut,
+			Handler: crud.Update,
+		},
+		DELETE: {
+			Path:    "/delete/:id",
+			Method:  http.MethodDelete,
+			Handler: crud.Delete,
+		},
+	}
 
-	crud.AddHandler(SINGLE, http.MethodGet, ItemHandler{
-		Path:    "/detail/:id",
-		Method:  http.MethodGet,
-		Handler: crud.Get,
-	})
-
-	crud.AddHandler(SAVE, http.MethodPost, ItemHandler{
-		Path:    "/save",
-		Method:  http.MethodPost,
-		Handler: crud.Create,
-	})
-
-	crud.AddHandler(UPDATE, http.MethodPost, ItemHandler{
-		Path:    "/update/:id",
-		Method:  http.MethodPut,
-		Handler: crud.Update,
-	})
-
-	crud.AddHandler(DELETE, http.MethodGet, ItemHandler{
-		Path:    "/delete/:id",
-		Method:  http.MethodDelete,
-		Handler: crud.Delete,
-	})
+	// 注册指定的默认处理器
+	for _, name := range defaultHandlers {
+		if handler, ok := handlerMap[name]; ok {
+			crud.AddHandler(name, handler.Method, handler)
+		}
+	}
 
 	return crud
 }
