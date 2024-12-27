@@ -1,0 +1,106 @@
+### 用户 API 测试
+
+### 列出所有用户
+GET http://localhost:8080/api/users
+Accept: application/json
+
+### 获取单个用户
+GET http://localhost:8080/api/users/1
+Accept: application/json
+
+### 创建用户
+POST http://localhost:8080/api/users/save
+Content-Type: application/json
+
+{
+    "username": "newuser",
+    "password": "123456",
+    "email": "newuser@example.com",
+    "status": 1
+}
+
+### 更新用户
+POST http://localhost:8080/api/users/update/1
+Content-Type: application/json
+
+{
+    "username": "updateduser",
+    "email": "updated@example.com",
+    "status": 1
+}
+
+### 删除用户
+GET http://localhost:8080/api/users/delete/3
+Accept: application/json
+
+### 文章 API 测试
+
+### 列出所有文章
+GET http://localhost:8080/api/articles
+Accept: application/json
+
+### 获取单个文章
+GET http://localhost:8080/api/articles/1
+Accept: application/json
+
+### 创建文章
+POST http://localhost:8080/api/articles/save
+Content-Type: application/json
+
+{
+    "title": "New Article",
+    "content": "This is a new article content.",
+    "user_id": 1,
+    "status": 1
+}
+
+### 更新文章
+POST http://localhost:8080/api/articles/update/1
+Content-Type: application/json
+
+{
+    "title": "Updated Article",
+    "content": "This is the updated content.",
+    "status": 1
+}
+
+### 删除文章
+GET http://localhost:8080/api/articles/delete/5
+Accept: application/json
+
+### 高级查询示例
+
+### 按用户名模糊搜索
+GET http://localhost:8080/api/users?username_like=user
+Accept: application/json
+
+### 按状态过滤
+GET http://localhost:8080/api/users?status=1
+Accept: application/json
+
+### 按创建时间范围查询
+GET http://localhost:8080/api/users?created_at_gte=2024-01-01&created_at_lt=2024-12-31
+Accept: application/json
+
+### 分页查询
+GET http://localhost:8080/api/users?pageNum=1&pageSize=10
+Accept: application/json
+
+### 排序
+GET http://localhost:8080/api/users?orderBy=-created_at,username
+Accept: application/json
+
+### 组合查询
+GET http://localhost:8080/api/articles?user_id=1&status=1&orderBy=-created_at&pageNum=1&pageSize=10
+Accept: application/json
+
+### 使用 Save 更新用户
+POST http://localhost:8080/api/users/save
+Content-Type: application/json
+
+{
+    "id": 1,
+    "username": "updateduser",
+    "email": "updated@example.com",
+    "status": 1
+} 
