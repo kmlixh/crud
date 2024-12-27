@@ -1,207 +1,95 @@
 package crud
 
 import (
-	"encoding/json"
-	"io"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-type CodeMsg map[string]interface{}
+// 预定义响应码
+const (
+	CodeSuccess = 200 // 成功
+	CodeError   = 500 // 服务器错误
+	CodeInvalid = 400 // 请求无效
+)
 
-func Ok(data ...interface{}) CodeMsg {
-	c := RawCodeMsg(0, "ok", nil)
-	if data != nil && len(data) >= 1 {
-		if len(data) == 1 {
-			c.SetData(data[0])
-		} else {
-			c.SetData(data)
-		}
+// 预定义消息
+const (
+	MsgSuccess = "success" // 成功
+	MsgError   = "error"   // 错误
+)
+
+// CodeMsg 统一响应结构
+type CodeMsg struct {
+	Code    int         `json:"code"`           // 响应码
+	Message string      `json:"message"`        // 响应消息
+	Data    interface{} `json:"data,omitempty"` // 响应数据，可选
+}
+
+// JsonOk 返回成功响应
+func JsonOk(c *gin.Context, data interface{}) {
+	c.JSON(http.StatusOK, CodeMsg{
+		Code:    CodeSuccess,
+		Message: MsgSuccess,
+		Data:    data,
+	})
+}
+
+// JsonErr 返回错误响应
+func JsonErr(c *gin.Context, code int, message string) {
+	var httpStatus int
+	switch code {
+	case CodeInvalid:
+		httpStatus = http.StatusBadRequest
+	case CodeError:
+		httpStatus = http.StatusInternalServerError
+	default:
+		httpStatus = http.StatusInternalServerError
 	}
-	return c
+	c.JSON(httpStatus, CodeMsg{
+		Code:    code,
+		Message: message,
+	})
 }
 
-func (c CodeMsg) Code() int {
-	return c["code"].(int)
+// Json 直接返回对象
+func Json(c *gin.Context, obj interface{}) {
+	c.JSON(http.StatusOK, obj)
 }
-func (c CodeMsg) SetCode(code int) CodeMsg {
-	c["code"] = code
-	return c
-}
-func (c CodeMsg) Msg() string {
-	return c["msg"].(string)
-}
-func (c CodeMsg) SetMsg(msg string) CodeMsg {
-	c["msg"] = msg
-	return c
-}
-func (c CodeMsg) Data() int {
-	return c["data"].(int)
-}
-func (c CodeMsg) SetData(data interface{}) CodeMsg {
-	c.Set("data", data)
-	return c
-}
-func (c CodeMsg) Set(name string, data interface{}) CodeMsg {
-	c[name] = data
-	return c
-}
-func RawCodeMsg(code int, msg string, data interface{}) CodeMsg {
-	codeMsg := CodeMsg{}
-	codeMsg["code"] = code
-	codeMsg["msg"] = msg
-	if data != nil {
-		codeMsg["data"] = data
+
+// CodeMsgFunc 返回自定义响应
+func CodeMsgFunc(c *gin.Context, code int, message string, data interface{}) {
+	var httpStatus int
+	switch code {
+	case CodeSuccess:
+		httpStatus = http.StatusOK
+	case CodeInvalid:
+		httpStatus = http.StatusBadRequest
+	case CodeError:
+		httpStatus = http.StatusInternalServerError
+	default:
+		httpStatus = http.StatusOK
 	}
-	return codeMsg
+	c.JSON(httpStatus, CodeMsg{
+		Code:    code,
+		Message: message,
+		Data:    data,
+	})
 }
 
-func Err() CodeMsg {
-	return RawCodeMsg(-1, "error", nil)
-}
-
-func Err2(code int, msg string) CodeMsg {
-	return RawCodeMsg(code, msg, nil)
-}
-func RenderJson(c *gin.Context, data interface{}) {
-	c.JSON(200, data)
-}
-func RenderOk(c *gin.Context, data ...interface{}) {
-	c.JSON(200, Ok(data...))
-}
-func RenderErr(c *gin.Context) {
-	c.JSON(200, Err())
-}
-func RenderErrs(c *gin.Context, er error) {
-	c.JSON(200, Err2(500, er.Error()))
-}
-func RenderErr2(c *gin.Context, code int, msg string) {
-	c.JSON(200, Err2(code, msg))
-}
-
-func Cors(allowList map[string]bool) gin.HandlerFunc {
+// Cors 跨域中间件
+func Cors() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if origin := c.Request.Header.Get("Origin"); allowList[origin] {
-			c.Header("Access-Control-Allow-Origin", origin)
-			c.Header("Access-Control-Allow-Headers", "Content-Type, AccessToken, X-CSRF-Token, Authorization, Token,token")
-			c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-			c.Header("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Content-Type")
-			c.Header("Access-Control-Allow-Credentials", "true")
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Header("Access-Control-Max-Age", "86400")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
 		}
 
-		// 允许放行OPTIONS请求
-		method := c.Request.Method
-		if method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusNoContent)
-		}
 		c.Next()
 	}
-}
-
-type Server struct {
-	server *http.Server
-	engine *gin.Engine
-}
-
-func NewServer() *Server {
-	engine := gin.Default()
-	return NewServer2(engine, ":80", 60*time.Second, 30*time.Second, 1<<20)
-}
-
-func NewServer2(engine *gin.Engine, addr string, readTimeout time.Duration, writeTimeout time.Duration, maxHeaderBytes int) *Server {
-	return &Server{&http.Server{
-		Addr:           addr,
-		Handler:        engine,
-		ReadTimeout:    readTimeout,
-		WriteTimeout:   writeTimeout,
-		MaxHeaderBytes: maxHeaderBytes,
-	}, engine}
-}
-func (s *Server) SetAddr(addr string) *Server {
-	s.server.Addr = addr
-	return s
-
-}
-func (s *Server) SetReadTimeout(time time.Duration) *Server {
-	s.server.ReadTimeout = time
-	return s
-
-}
-func (s *Server) SetWriteTimeout(time time.Duration) *Server {
-	s.server.WriteTimeout = time
-	return s
-
-}
-func (s *Server) SetMaxHeaderBytes(max int) *Server {
-	s.server.MaxHeaderBytes = max
-	return s
-}
-func (s *Server) SetHttpServer(server *http.Server) *Server {
-	s.server = server
-	s.server.Handler = s.engine
-	return s
-
-}
-func (s *Server) SetEngine(engine *gin.Engine) *Server {
-	s.engine = engine
-	s.server.Handler = s.engine
-	return s
-}
-
-func (s Server) GetEngine() *gin.Engine {
-	return s.engine
-}
-func (s Server) GetServer() *http.Server {
-	return s.server
-}
-func (s Server) ListenAndServe() error {
-	return s.server.ListenAndServe()
-}
-
-func GetMapFromRst(c *gin.Context) (map[string]any, error) {
-	var maps map[string]interface{}
-	var er error
-	if c.Request.Method == "POST" {
-		contentType := c.GetHeader("Content-Type")
-		if strings.Contains(contentType, "application/x-www-form-urlencoded") {
-			maps = make(map[string]interface{})
-			er = c.Request.ParseForm()
-			if er != nil {
-				return nil, er
-			}
-			values := c.Request.Form
-			for k, v := range values {
-				if len(v) == 1 {
-					maps[k] = v[0]
-				} else {
-					maps[k] = v
-				}
-			}
-
-		} else if strings.Contains(contentType, "application/json") {
-			bbs, er := io.ReadAll(c.Request.Body)
-			if er != nil {
-				return nil, er
-			}
-			er = json.Unmarshal(bbs, &maps)
-		}
-	} else if c.Request.Method == http.MethodGet {
-		maps = make(map[string]interface{})
-		values := c.Request.URL.Query()
-		for k, v := range values {
-			if len(v) == 1 {
-				maps[k] = v[0]
-			} else {
-				maps[k] = v
-			}
-		}
-	}
-	if er != nil {
-		return nil, er
-	}
-	return maps, nil
-
 }

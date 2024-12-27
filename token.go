@@ -3,128 +3,118 @@ package crud
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"github.com/gin-gonic/gin"
+	"fmt"
+	"time"
+
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
-	"strings"
-	"time"
 )
 
+// TokenDetail Token详情
 type TokenDetail struct {
-	Token    string
-	UserId   string
-	UserType string
-	Expire   time.Duration
+	Token     string        `json:"token"`
+	UserID    string        `json:"user_id"`
+	UserType  string        `json:"user_type"`
+	ExpiresIn time.Duration `json:"expires_in"`
 }
 
-func (t *TokenDetail) UnmarshalBinary(data []byte) error {
-	return json.Unmarshal(data, t)
-}
-
-func (t TokenDetail) MarshalBinary() (data []byte, err error) {
-	return json.Marshal(t)
-}
-
+// TokenStore Token存储接口
 type TokenStore interface {
 	SaveToken(detail TokenDetail) error
-	GenerateToken(userId string, userType string) string
-	GetTokenDetail(token string) (TokenDetail, error)
+	GetToken(token string) (*TokenDetail, error)
 	DeleteToken(token string) error
-	GetTokensOfUser(userId string, userType string) []string
+	GetUserTokens(userID, userType string) ([]string, error)
 }
+
+// RedisTokenStore Redis实现的Token存储
 type RedisTokenStore struct {
-	RedisClient *redis.Client
+	client *redis.Client
+	prefix string
 }
 
-func (r RedisTokenStore) SaveToken(detail TokenDetail) error {
-	cmd := r.RedisClient.Set(context.Background(), "TOKEN_USER_"+detail.UserType+"_"+detail.UserId+"_"+detail.Token, detail, detail.Expire)
-	if cmd.Err() != nil {
-		return cmd.Err()
+// NewRedisTokenStore 创建Redis Token存储
+func NewRedisTokenStore(client *redis.Client, prefix string) *RedisTokenStore {
+	return &RedisTokenStore{
+		client: client,
+		prefix: prefix,
 	}
-	cmds := r.RedisClient.Set(context.Background(), "TOKEN_"+detail.Token, detail, detail.Expire)
-	return cmds.Err()
 }
 
-func (r RedisTokenStore) GenerateToken(userId string, userType string) string {
-	uuid, er := uuid.NewUUID()
-	if er != nil {
-		return ""
+// SaveToken 保存Token
+func (s *RedisTokenStore) SaveToken(detail TokenDetail) error {
+	data, err := json.Marshal(detail)
+	if err != nil {
+		return err
 	}
-	return uuid.String()
-}
 
-func (r RedisTokenStore) GetTokenDetail(token string) (TokenDetail, error) {
-	cmd := r.RedisClient.Get(context.Background(), "TOKEN_"+token)
-	if cmd.Err() != nil {
-		return TokenDetail{}, cmd.Err()
-	}
-	var detail TokenDetail
-	er := cmd.Scan(&detail)
-	if er != nil || detail.Token == "" {
-		return TokenDetail{}, errors.New("token not found")
-	}
-	return detail, er
-}
-
-func (r RedisTokenStore) GetTokensOfUser(userId string, userType string) []string {
-	var results []string
-	prefix := "TOKEN_USER_" + userId + "_" + userType + "_"
 	ctx := context.Background()
-	it := r.RedisClient.Scan(ctx, 0, prefix+"*", 1).Iterator()
-	for it.Next(ctx) {
-		results = append(results, strings.TrimLeft(it.Val(), prefix))
-	}
-	return results
+	key := fmt.Sprintf("%s:token:%s", s.prefix, detail.Token)
+	userKey := fmt.Sprintf("%s:user:%s:%s", s.prefix, detail.UserType, detail.UserID)
+
+	pipe := s.client.Pipeline()
+	pipe.Set(ctx, key, data, detail.ExpiresIn)
+	pipe.SAdd(ctx, userKey, detail.Token)
+	pipe.Expire(ctx, userKey, detail.ExpiresIn)
+
+	_, err = pipe.Exec(ctx)
+	return err
 }
 
-func (r RedisTokenStore) DeleteToken(token string) error {
-	detail, er := r.GetTokenDetail(token)
-	if er != nil {
-		return er
-	}
-	cmd := r.RedisClient.Del(context.Background(), "TOKEN_USER_"+detail.UserType+"_"+detail.UserId+"_"+detail.Token, "TOKEN_"+detail.Token)
-	return cmd.Err()
-}
+// GetToken 获取Token信息
+func (s *RedisTokenStore) GetToken(token string) (*TokenDetail, error) {
+	ctx := context.Background()
+	key := fmt.Sprintf("%s:token:%s", s.prefix, token)
 
-func NewRedisStore(client *redis.Client) RedisTokenStore {
-	return RedisTokenStore{client}
-}
-
-var store TokenStore
-
-func SetStore(tokenStore TokenStore) {
-	store = tokenStore
-}
-
-func GenTokenForUser(userId string, userType string, expire time.Duration) (string, error) {
-	token := store.GenerateToken(userId, userType)
-	detail := TokenDetail{Token: token, UserId: userId, UserType: userType, Expire: expire}
-	er := store.SaveToken(detail)
-	return token, er
-}
-func CheckToken(token string) bool {
-	_, er := store.GetTokenDetail(token)
-	return er == nil
-}
-func CheckTokenGin(c *gin.Context) {
-	token := c.GetHeader("token")
-	if token == "" {
-		RenderJson(c, Err2(403, "unauthorized!"))
-		c.Abort()
-	} else {
-		if CheckToken(token) {
-			detail, er := store.GetTokenDetail(token)
-			if er == nil && detail.UserId != "" {
-				c.Set("userId", detail.UserId)
-			}
-			c.Next()
-		} else {
-			RenderJson(c, Err2(403, "unauthorized!"))
-			c.Abort()
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
 		}
+		return nil, err
 	}
+
+	var detail TokenDetail
+	if err := json.Unmarshal(data, &detail); err != nil {
+		return nil, err
+	}
+
+	return &detail, nil
 }
-func GetTokensOfUser(userId string, userType string) []string {
-	return store.GetTokensOfUser(userId, userType)
+
+// DeleteToken 删除Token
+func (s *RedisTokenStore) DeleteToken(token string) error {
+	detail, err := s.GetToken(token)
+	if err != nil {
+		return err
+	}
+	if detail == nil {
+		return nil
+	}
+
+	ctx := context.Background()
+	key := fmt.Sprintf("%s:token:%s", s.prefix, token)
+	userKey := fmt.Sprintf("%s:user:%s:%s", s.prefix, detail.UserType, detail.UserID)
+
+	pipe := s.client.Pipeline()
+	pipe.Del(ctx, key)
+	pipe.SRem(ctx, userKey, token)
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+// GetUserTokens 获取用户的所有Token
+func (s *RedisTokenStore) GetUserTokens(userID, userType string) ([]string, error) {
+	ctx := context.Background()
+	key := fmt.Sprintf("%s:user:%s:%s", s.prefix, userType, userID)
+	return s.client.SMembers(ctx, key).Result()
+}
+
+// GenerateToken 生成新的Token
+func GenerateToken(userID, userType string, expiresIn time.Duration) TokenDetail {
+	return TokenDetail{
+		Token:     uuid.New().String(),
+		UserID:    userID,
+		UserType:  userType,
+		ExpiresIn: expiresIn,
+	}
 }

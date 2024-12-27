@@ -1,713 +1,371 @@
 package crud
 
-import "C"
 import (
-	"errors"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/kmlixh/gom/v3"
-	"github.com/kmlixh/gom/v3/define"
 	"net/http"
-	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
+
+	"github.com/gin-gonic/gin"
+	"github.com/kmlixh/gom/v4"
 )
 
-var prefix = "auto_crud_inject_"
+// 默认路由常量
+const (
+	LIST   = "list"   // 列表
+	SINGLE = "single" // 详情
+	SAVE   = "save"   // 保存
+	UPDATE = "update" // 更新
+	DELETE = "delete" // 删除
+	PAGE   = "page"   // 分页
+)
 
-func ToCamelCaseWithRegex(s string) string {
-	// 正则表达式匹配一个或多个下划线，后面跟一个字母
-	regex := regexp.MustCompile(`_+([a-zA-Z])`)
-	// 将每个匹配项中的字母转换为大写
-	return regex.ReplaceAllStringFunc(s, func(sub string) string {
-		return strings.ToUpper(sub[len(sub)-1:])
+// ItemHandler 自定义处理器
+type ItemHandler struct {
+	Path          string          // 路由后缀
+	Method        string          // HTTP 方法
+	Handler       gin.HandlerFunc // 处理函数
+	Conds         []QueryCondFunc // 查询条件函数
+	AllowedFields []string        // 允许的字段列表（查询和更新都使用此列表）
+}
+
+// QueryCondFunc 查询条件函数
+type QueryCondFunc func(*gom.Chain) *gom.Chain
+
+// Crud 自动CRUD处理器
+type Crud struct {
+	db        *gom.DB
+	entity    interface{}
+	tableName string
+	handlers  map[string]ItemHandler
+}
+
+// New 创建新的Crud实例
+func New(db *gom.DB, entity interface{}, tableName string) *Crud {
+	crud := &Crud{
+		db:        db,
+		entity:    entity,
+		tableName: tableName,
+		handlers:  make(map[string]ItemHandler),
+	}
+
+	// 注册默认处理器
+	crud.AddHandler(LIST, http.MethodGet, ItemHandler{
+		Path:    "/list",
+		Method:  http.MethodGet,
+		Handler: crud.List,
 	})
+
+	crud.AddHandler(PAGE, http.MethodGet, ItemHandler{
+		Path:    "/page",
+		Method:  http.MethodGet,
+		Handler: crud.List,
+	})
+
+	crud.AddHandler(SINGLE, http.MethodGet, ItemHandler{
+		Path:    "/detail/:id",
+		Method:  http.MethodGet,
+		Handler: crud.Get,
+	})
+
+	crud.AddHandler(SAVE, http.MethodPost, ItemHandler{
+		Path:    "/save",
+		Method:  http.MethodPost,
+		Handler: crud.Create,
+	})
+
+	crud.AddHandler(UPDATE, http.MethodPost, ItemHandler{
+		Path:    "/update/:id",
+		Method:  http.MethodPut,
+		Handler: crud.Update,
+	})
+
+	crud.AddHandler(DELETE, http.MethodGet, ItemHandler{
+		Path:    "/delete/:id",
+		Method:  http.MethodDelete,
+		Handler: crud.Delete,
+	})
+
+	return crud
 }
-func ToSnakeCase(s string) string {
-	var result []rune
-	for i, r := range s {
-		if unicode.IsUpper(r) {
-			// 如果是大写字母且不是第一个字符，前面加下划线
-			if i > 0 {
-				result = append(result, '_')
-			}
-			result = append(result, unicode.ToLower(r))
-		} else {
-			result = append(result, r)
+
+// GetHandler 获取指定名称的处理器
+func (ac *Crud) GetHandler(name string) (ItemHandler, bool) {
+	h, ok := ac.handlers[name]
+	return h, ok
+}
+
+// AddHandler 添加自定义处理器
+func (ac *Crud) AddHandler(name string, method string, handler ItemHandler) {
+	ac.handlers[name] = handler
+}
+
+// filterFields 过滤字段（用于查询和更新）
+func (ac *Crud) filterFields(h ItemHandler, data map[string]interface{}) map[string]interface{} {
+	if len(h.AllowedFields) == 0 {
+		return data
+	}
+
+	filtered := make(map[string]interface{})
+	allowedMap := make(map[string]bool)
+	for _, f := range h.AllowedFields {
+		allowedMap[f] = true
+	}
+
+	for k, v := range data {
+		if allowedMap[k] {
+			filtered[k] = v
 		}
 	}
-	return string(result)
+
+	return filtered
 }
 
-func SetContextEntity(i any) gin.HandlerFunc {
-	return SetContextAny("entity", i)
-}
-
-func GetContextEntity(c *gin.Context) (any, bool) {
-	return c.Get(prefix + "entity")
-}
-
-func HasEntity(c *gin.Context) bool {
-	_, ok := c.Keys[prefix+"entity"]
-	return ok
-}
-func DefaultGenPageFromRstQuery(c *gin.Context) {
-	pageNumt := c.Query("pageNum")
-	if pageNumt == "" {
-		pageNumt = "1"
+// List 列表查询
+func (ac *Crud) List(c *gin.Context) {
+	page, size := parsePagination(c)
+	var chain *gom.Chain
+	if v, exists := c.Get("chain"); exists {
+		chain = v.(*gom.Chain)
+	} else {
+		chain = ac.db.Chain().Table(ac.tableName)
 	}
-	pageNum, er := strconv.Atoi(pageNumt)
-	if er != nil {
-		c.Abort()
-		RenderErrs(c, er)
+
+	// 处理查询条件
+	if err := parseQueryConditions(c, chain); err != nil {
+		JsonErr(c, CodeInvalid, err.Error())
 		return
 	}
-	SetContextPageNumber(pageNum)(c)
-	pageSizet := c.Query("pageSize")
-	if pageSizet == "" {
-		pageSizet = "10"
-	}
-	pageSize, er := strconv.Atoi(pageSizet)
-	if er != nil {
-		c.Abort()
-		RenderErrs(c, er)
-		return
-	}
-	SetContextPageSize(pageSize)(c)
-}
 
-func SetContextPageNumber(num int) gin.HandlerFunc {
-	return SetContextAny("pageNum", num)
-}
-
-func SetContextPageSize(size int) gin.HandlerFunc {
-	return SetContextAny("pageSize", size)
-}
-func getContextPageNumber(c *gin.Context) int {
-	pageNumber := 0
-	i, ok := c.Get(prefix + "pageNum")
-	if ok {
-		pageNumber = i.(int)
-	} else {
-		pp, er := strconv.Atoi(c.Param("pageNum"))
-		if er == nil {
-			pageNumber = pp
-		}
-	}
-	if pageNumber == 0 {
-		pageNumber = 1
-	}
-	return pageNumber
-}
-func getContextPageSize(c *gin.Context) int {
-	pageSize := 0
-	i, ok := c.Get(prefix + "pageSize")
-	if ok {
-		pageSize = i.(int)
-	} else {
-		pp, er := strconv.Atoi(c.Param("pageSize"))
-		if er == nil {
-			pageSize = pp
-		}
-	}
-	if pageSize == 0 {
-		pageSize = 20
-	}
-	return pageSize
-
-}
-
-func DefaultUnMarshFunc(i any) gin.HandlerFunc {
-	return func(context *gin.Context) {
-		err := context.ShouldBind(i)
-		if err != nil {
-			context.Abort()
-			return
-		}
-		context.Set(prefix+"entity", i)
-	}
-}
-func StructToMap(input any) (bool, map[string]string) {
-	// 创建一个空的map用来存储结果
-	result := make(map[string]string)
-
-	// 获取传入结构体的值和类型
-	val := reflect.ValueOf(input)
-	typ := reflect.TypeOf(input)
-
-	// 确保传入的是struct
-	if val.Kind() == reflect.Struct {
-		// 遍历结构体的所有字段
-		for i := 0; i < val.NumField(); i++ {
-			// 获取字段的名称和值的类型
-			field := typ.Field(i)
-			fieldName := field.Name
-			fieldType := field.Type.String()
-
-			// 将字段名称和类型添加到map中
-			result[fieldName] = fieldType
-		}
-	} else {
-		return false, nil
+	// 获取当前处理器
+	h := ac.handlers[LIST]
+	if c.Query("page") != "" {
+		h = ac.handlers[PAGE]
 	}
 
-	return true, result
-}
+	// 处理字段选择
+	if len(h.AllowedFields) > 0 {
+		chain = chain.Fields(h.AllowedFields...)
+	}
 
-func NameMapFrom(i any, methods NameMethods) map[string]string {
-	ok, maps := StructToMap(i)
-	if !ok {
-		panic("input not a Struct")
-	}
-	nameMap := make(map[string]string)
-	for key := range maps {
-		if methods == CamelCase {
-			nameMap[key] = ToCamelCaseWithRegex(key)
-		} else if methods == SnakeCase {
-			nameMap[key] = ToSnakeCase(key)
-		} else {
-			nameMap[key] = key
-		}
-	}
-	return nameMap
-}
-
-func SetOrderBys(orderBys []define.OrderBy) gin.HandlerFunc {
-	return SetContextAny("orderBys", orderBys)
-}
-func GetOrderBys(c *gin.Context) ([]define.OrderBy, bool) {
-	i, ok := c.Get("orderBys")
-	if ok {
-		return i.([]define.OrderBy), ok
-	}
-	return nil, ok
-}
-func HasEntityOfName(c *gin.Context, name string) bool {
-	_, ok := c.Get(name)
-	return ok
-}
-
-func SetColumns(columns []string) gin.HandlerFunc {
-	return SetContextAny("cols", columns)
-}
-
-func SetConditionParamAsCnd(queryParam []ConditionParam) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		cnd, _, er := MapToParamCondition(c, queryParam)
-		if er == nil {
-			if cnd != nil {
-				c.Set(prefix+"cnd", cnd)
-			}
-		} else {
-			c.Abort()
-		}
-	}
-}
-
-func getContextCondition(c *gin.Context) (define.Condition, bool) {
-	i, ok := GetContextAny(c, "cnd")
-	if ok {
-		return i.(define.Condition), ok
-	}
-	return nil, ok
-}
-func SetContextCondition(cnd define.Condition) gin.HandlerFunc {
-	return SetContextAny("cnd", cnd)
-}
-func GetContextDatabase(c *gin.Context) (*gom.DB, bool) {
-	i, ok := GetContextAny(c, "db")
-	if ok {
-		return i.(*gom.DB), ok
-	}
-	return nil, ok
-}
-func SetContextDatabase(db *gom.DB) gin.HandlerFunc {
-	return SetContextAny("db", db)
-}
-func SetContextAny(name string, i any) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Set(prefix+name, i)
-	}
-}
-func GetContextAny(c *gin.Context, name string) (i any, ok bool) {
-	return c.Get(prefix + name)
-}
-
-func (d DefaultRoutePath) String() string {
-	return string(d)
-}
-
-func (h HandlerRegister) AddHandler(routeHandler RouteHandler) error {
-	if h.Handlers == nil {
-		h.Handlers = make([]RouteHandler, 0)
-	}
-	if h.IdxMap == nil {
-		h.IdxMap = make(map[string]int)
-	}
-	if _, ok := h.IdxMap[routeHandler.Path]; ok {
-		h.Handlers[h.IdxMap[routeHandler.Path]] = routeHandler
-	} else {
-		h.Handlers = append(h.Handlers, routeHandler)
-		h.IdxMap[routeHandler.Path] = len(h.Handlers) - 1
-	}
-	return nil
-}
-func (h HandlerRegister) GetHandler(name string) (RouteHandler, error) {
-	idx, ok := h.IdxMap[name]
-	if !ok {
-		return RouteHandler{}, errors.New(fmt.Sprintf("handler [%s] not found", name))
-	} else {
-		return h.Handlers[idx], nil
-	}
-}
-func (h HandlerRegister) DeleteHandler(name string) error {
-	idx, ok := h.IdxMap[name]
-	if !ok {
-		return errors.New(fmt.Sprintf("handler [%s] not found", name))
-	} else {
-		h.Handlers = append(h.Handlers[:idx], h.Handlers[idx+1:]...)
-		for k, v := range h.IdxMap {
-			if v > idx {
-				h.IdxMap[k] = v - 1
-			}
-		}
-		return nil
-	}
-}
-func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, appendType HandlerAppendType, position HandlerPosition) error {
-	_, ok := h.IdxMap[name]
-	var routeHandler RouteHandler
-	if !ok {
-		return errors.New(fmt.Sprintf("handler [%s] not found", name))
-	} else {
-		routeHandler = h.Handlers[h.IdxMap[name]]
-
-	}
-	funcs := routeHandler.Handlers[position]
-	if appendType == Before {
-		oldFunc := funcs
-		funcs = func(c *gin.Context) {
-			handler(c)
-			oldFunc(c)
-		}
-	} else if appendType == Replace {
-		funcs = handler
-	} else if appendType == After {
-		oldFunc := funcs
-		funcs = func(c *gin.Context) {
-			oldFunc(c)
-			handler(c)
-		}
-	}
-	h.Handlers[h.IdxMap[name]] = routeHandler
-	return nil
-}
-
-func (h HandlerRegister) Register(routes gin.IRoutes) error {
-	if h.Handlers == nil || len(h.Handlers) == 0 {
-		return errors.New("route handler could not be empty or nil")
-	}
-	for _, handler := range h.Handlers {
-		if handler.HttpMethod != "Any" {
-			routes.Handle(handler.HttpMethod, h.Name+"/"+handler.Path, handler.Handlers...)
-		} else {
-			routes.Any(h.Name+"/"+handler.Path, handler.Handlers...)
-		}
-	}
-	return nil
-}
-
-func GenHandlerRegister(name string, handlers ...RouteHandler) (IHandlerRegister, error) {
-	if handlers == nil || len(handlers) == 0 {
-		return HandlerRegister{}, errors.New("route handler could not be empty or nil")
-	}
-	handlerIdxMap := make(map[string]int)
-	for i, handler := range handlers {
-		handlerIdxMap[handler.Path] = i
-	}
-	return HandlerRegister{
-		Name:     name,
-		Handlers: handlers,
-		IdxMap:   handlerIdxMap,
-	}, nil
-}
-
-func GetAutoRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegister, error) {
-	columnNames, primaryKeys, primaryAuto, columnIdxMap := gom.GetColumns(reflect.ValueOf(i))
-	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
-
-	if len(columnNames) > 0 {
-		listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols), DefaultGenPageFromRstQuery, DoNothingFunc)
-		detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols), DoNothingFunc, DoNothingFunc)
-		insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(queryCols), DoNothingFunc, DoNothingFunc)
-		updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), SetColumns(append(primaryKeys, columnNames...)), DoNothingFunc, DoNothingFunc)
-		deleteHandler := GetDeleteHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), DoNothingFunc, DoNothingFunc, DoNothingFunc)
-		tableStructHandler := GetTableStructHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc)
-		return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler, tableStructHandler, GetAutoTableViewRouteHandler(TableConfig.String(), db, i))
-	} else {
-		return nil, errors.New("Struct was empty")
-	}
-}
-func GetRouteHandler2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam) (IHandlerRegister, error) {
-	listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols), DefaultGenPageFromRstQuery, DoNothingFunc)
-	detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(detailConditionParam), SetColumns(queryDetailCols), DoNothingFunc, DoNothingFunc)
-	insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(insertCols), DoNothingFunc, DoNothingFunc)
-	updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(updateConditionParam), SetColumns(updateCols), DoNothingFunc, DoNothingFunc)
-	deleteHandler := GetDeleteHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(deleteConditionParam), DoNothingFunc, DoNothingFunc, DoNothingFunc)
-	tableStructHandler := GetTableStructHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc)
-	return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler, tableStructHandler, GetAutoTableViewRouteHandler(TableConfig.String(), db, i))
-}
-
-func GetConditionParam(columns []string, columnFieldMap map[string]string, i any) []ConditionParam {
-	t := reflect.TypeOf(i)
-	params := make([]ConditionParam, 0)
-	for _, col := range columns {
-		fieldName := columnFieldMap[col]
-		f, ok := t.FieldByName(fieldName)
-		if !ok {
-			panic(errors.New(fmt.Sprintf(" [%s] was not exist! ", fieldName)))
-		}
-		params = append(params, GenDefaultConditionParamByType(col, f))
-	}
-	return params
-}
-func GenDefaultConditionParamByType(column string, f reflect.StructField) ConditionParam {
-	return ConditionParam{
-		QueryName: GetFieldDefaultQueryName(f),
-		ColName:   column,
-		Operation: define.Eq,
-	}
-}
-func GetFieldDefaultQueryName(f reflect.StructField) string {
-	return ToCamelCaseWithRegex(f.Name)
-}
-
-func GetQueryListHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathList), "Any", append(beforeCommitFunc, QueryList(), RenderJSON)...)
-}
-func GetQuerySingleHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathDetail), http.MethodGet, append(beforeCommitFunc, QuerySingle(), RenderJSON)...)
-}
-func GetInsertHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathAdd), http.MethodPost, append(beforeCommitFunc, DoInsert(), RenderJSON)...)
-}
-func GetUpdateHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathUpdate), http.MethodPost, append(beforeCommitFunc, DoUpdate(), RenderJSONP)...)
-}
-func GetDeleteHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathDelete), http.MethodDelete, append(beforeCommitFunc, DoDelete(), RenderJSON)...)
-}
-func GetTableStructHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathTableStruct), http.MethodDelete, append(beforeCommitFunc, DoTableStruct(), RenderJSONP)...)
-}
-func GetRouteHandler(path string, method string, handlers ...gin.HandlerFunc) RouteHandler {
-	return RouteHandler{
-		Path:       path,
-		HttpMethod: method,
-		Handlers:   handlers,
-	}
-}
-
-func DoTableStruct() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
-
-		}
-		tableStruct, er := db.GetTableStruct2(i)
-		if er != nil {
-			RenderErrs(c, er)
-			return
-		}
-		SetContextEntity(tableStruct)(c)
-	}
-}
-
-func DoDelete() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-		cnd, ok := getContextCondition(c)
-		if !ok || cnd == nil {
-			RenderErrs(c, errors.New("can't get Cnd"))
-			return
-		}
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
-
-		}
-		rs, er := db.Where(cnd).Delete(i)
-		if er != nil {
-			RenderErrs(c, er)
-			return
-		}
-		SetContextEntity(rs)(c)
-	}
-}
-func DoUpdate() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-		cnd, ok := getContextCondition(c)
-		if !ok || cnd == nil {
-			RenderErrs(c, errors.New("can't get Cnd"))
-			return
-		}
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
-
-		}
-		cols := make([]string, 0)
-		cc, ok := GetContextAny(c, "cols")
-		if !ok {
-			cols = cc.([]string)
-		}
-		rs, er := db.Where(cnd).Update(i, cols...)
-		if er != nil {
-			RenderErrs(c, er)
-			return
-		}
-		SetContextEntity(rs)(c)
-	}
-}
-func DoInsert() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
-
-		}
-		cols := make([]string, 0)
-		cc, ok := GetContextAny(c, "cols")
-		if !ok {
-			cols = cc.([]string)
-		}
-		rs, er := db.Insert(i, cols...)
-		if er != nil {
-			RenderErrs(c, er)
-			return
-		}
-		SetContextEntity(rs)(c)
-
-	}
-}
-func QuerySingle() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
-		}
-		cnd, ok := getContextCondition(c)
-		if ok && cnd != nil {
-			db.Where(cnd)
-		}
-		rawInfo := gom.GetRawTableInfo(i)
-		result := reflect.New(reflect.TypeOf(rawInfo.Type)).Interface()
-		cols := make([]string, 0)
-		cc, ok := GetContextAny(c, "cols")
-		if !ok {
-			cols = cc.([]string)
-		}
-		_, er := db.Select(&result, cols...)
-		if er != nil {
-			RenderErrs(c, er)
-			return
-		}
-		SetContextEntity(result)(c)
-	}
-}
-func QueryList() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
-		}
-		rawInfo := gom.GetRawTableInfo(i)
-		results := reflect.Indirect(reflect.New(reflect.SliceOf(rawInfo.Type)))
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-		cnd, ok := getContextCondition(c)
-		if ok && cnd != nil {
-			db.Where(cnd)
-		}
-		counts, er := db.Table(rawInfo.TableName).Count("*")
-		pageNum := int64(getContextPageNumber(c))
-		pageSize := int64(getContextPageSize(c))
-		cols := make([]string, 0)
-		cc, ok := GetContextAny(c, "cols")
-		if !ok {
-			cols = cc.([]string)
-		}
-		db.Page(pageNum, pageSize)
-		orderBys, ok := GetOrderBys(c)
-		if ok {
-			db.OrderBys(orderBys)
-		}
-		_, er = db.Select(results, cols...)
-		if er != nil {
-			c.Abort()
-			RenderErrs(c, er)
-			return
-		}
-		totalPages := counts / pageSize
-		if counts%pageSize > 0 {
-			totalPages++
-		}
-		page := PageInfo{pageNum, pageSize, counts, totalPages, results.Interface()}
-		SetContextEntity(page)(c)
-	}
-}
-
-func RenderJSON(c *gin.Context) {
-	results, ok := GetContextEntity(c)
-	if ok {
-		RenderOk(c, results)
-	} else {
-		RenderErr2(c, 500, "can't find result")
-	}
-}
-func RenderJSONP(c *gin.Context) {
-	results, ok := GetContextEntity(c)
-	if ok {
-		c.JSONP(200, results)
-	} else {
-		c.JSONP(200, nil)
-	}
-}
-
-var Operators = []string{"Eq", "Le", "Lt", "Ge", "Gt", "Like", "LikeLeft", "LikeRight", "In", "NotIn", "NotLike", "NotEq"}
-
-func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (define.Condition, map[string]interface{}, error) {
-	maps, err := GetMapFromRst(c)
-	hasValMap := make(map[string]string)
+	// 获取总数
+	total, err := chain.Count()
 	if err != nil {
-		return nil, nil, err
+		JsonErr(c, CodeError, err.Error())
+		return
 	}
-	if len(maps) > 0 && len(conditionParams) > 0 {
-		var cnd = gom.CndEmpty()
-		for _, param := range conditionParams {
-			oldName, hasOldVal := hasValMap[param.QueryName]
-			if hasOldVal {
-				return nil, nil, errors.New(fmt.Sprintf("u have a query condition like [%s]", oldName))
-			}
-			for _, oper := range Operators {
-				val, hasVal := maps[param.QueryName+oper]
-				if hasVal {
-					hasValMap[param.ColName] = param.QueryName + oper
-					switch oper {
-					case "Eq":
-						cnd.Eq(param.ColName, val)
-					case "NotEq":
-						cnd.NotEq(param.ColName, val)
-					case "Le":
-						cnd.Le(param.ColName, val)
-					case "Lt":
-						cnd.Lt(param.ColName, val)
-					case "Ge":
-						cnd.Ge(param.ColName, val)
-					case "Gt":
-						cnd.Gt(param.ColName, val)
-					case "Like":
-						cnd.Like(param.ColName, val)
-					case "LikeLeft":
-						cnd.LikeIgnoreStart(param.ColName, val)
-					case "LikeRight":
-						cnd.LikeIgnoreEnd(param.ColName, val)
-					case "In":
-						cnd.In(param.ColName, gom.UnZipSlice(val)...)
-					case "NotIn":
-						cnd.NotIn(param.ColName, gom.UnZipSlice(val)...)
-					case "NotLike":
-						cnd.NotLike(param.ColName, val)
-					}
-				}
-			}
 
+	// 处理排序和分页
+	chain = chain.Offset((page - 1) * size).Limit(size)
+	if sort := c.Query("sort"); sort != "" {
+		if sort[0] == '-' {
+			chain = chain.OrderByDesc(sort[1:])
+		} else {
+			chain = chain.OrderBy(sort)
 		}
-		if cnd.PayLoads() > 0 {
-			return cnd, maps, nil
-		}
-		return nil, nil, nil
-	} else {
-		return nil, nil, nil
 	}
-}
 
-func AutoTableViewHandler(name string, db *gom.DB, i any) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tableInfo, e := GetDefaultTableInfo(name, db, i)
-		if e != nil {
-			c.Abort()
-			RenderErrs(c, e)
-			return
-		}
-		SetContextEntity(tableInfo)(c)
+	// 执行查询
+	result := chain.List()
+	if err := result.Error(); err != nil {
+		JsonErr(c, CodeError, err.Error())
+		return
 	}
-}
-func GetDefaultTableInfo(name string, db *gom.DB, i any) (TableInfo, error) {
-	v := reflect.ValueOf(i)
-	_, _, _, columnIdxMap := gom.GetColumns(v)
-	tableStruct, e := db.GetTableStruct2(i)
-	if e != nil {
-		return TableInfo{}, e
-	}
-	tableCols := tableStruct.(define.TableStruct).Columns
-	cols := make([]ColumnInfo, 0)
-	for _, cc := range tableCols {
-		if fieldName, ok := columnIdxMap[cc.ColumnName]; ok {
-			col := ColumnInfo{
-				Name:          cc.ColumnName,
-				Title:         cc.Comment,
-				DateType:      fieldName,
-				Constraint:    Constraint{},
-				Options:       nil,
-				ColumnVisible: true,
-				Searchable:    false,
-				Editable:      cc.PrimaryAuto || cc.Primary,
-			}
-			cols = append(cols, col)
-		} else {
-			return TableInfo{}, errors.New("[" + cc.ColumnName + "] can't found In [" + v.Type().Name() + "]")
-		}
-	}
-	tableInfo := TableInfo{
-		Name:    name,
-		Title:   tableStruct.GetTableComment(),
-		Columns: cols,
-	}
-	return tableInfo, nil
-}
-func GetAutoTableViewRouteHandler(name string, db *gom.DB, i any) RouteHandler {
-	return GetRouteHandler(name, "any", AutoTableViewHandler(name, db, i), func(c *gin.Context) {
-		method := c.Request.Method
-		if method == "JSONP" {
-			RenderJSONP(c)
-		} else {
-			RenderJSON(c)
-		}
+
+	JsonOk(c, gin.H{
+		"total":    total,
+		"page":     page,
+		"size":     size,
+		"data":     result.Data,
+		"lastPage": (page * size) >= int(total),
 	})
+}
+
+// Create 创建记录
+func (ac *Crud) Create(c *gin.Context) {
+	data := make(map[string]interface{})
+	if err := c.ShouldBindJSON(&data); err != nil {
+		JsonErr(c, CodeInvalid, err.Error())
+		return
+	}
+
+	// 过滤字段
+	h := ac.handlers[SAVE]
+	data = ac.filterFields(h, data)
+
+	var chain *gom.Chain
+	if v, exists := c.Get("chain"); exists {
+		chain = v.(*gom.Chain)
+	} else {
+		chain = ac.db.Chain().Table(ac.tableName)
+	}
+
+	chain = chain.Values(data)
+	result, err := chain.Save()
+	if err != nil {
+		JsonErr(c, CodeError, err.Error())
+		return
+	}
+
+	JsonOk(c, result)
+}
+
+// Get 获取单条记录
+func (ac *Crud) Get(c *gin.Context) {
+	var chain *gom.Chain
+	if v, exists := c.Get("chain"); exists {
+		chain = v.(*gom.Chain)
+	} else {
+		chain = ac.db.Chain().Table(ac.tableName)
+	}
+
+	// 处理字段选择
+	h := ac.handlers[SINGLE]
+	if len(h.AllowedFields) > 0 {
+		chain = chain.Fields(h.AllowedFields...)
+	}
+
+	chain = chain.Eq("id", c.Param("id"))
+	result := chain.One()
+
+	if err := result.Error(); err != nil {
+		JsonErr(c, CodeError, "record not found")
+		return
+	}
+
+	if result.Empty() {
+		JsonErr(c, CodeInvalid, "record not found")
+		return
+	}
+
+	JsonOk(c, result.Data[0])
+}
+
+// Update 更新记录
+func (ac *Crud) Update(c *gin.Context) {
+	data := make(map[string]interface{})
+	if err := c.ShouldBindJSON(&data); err != nil {
+		JsonErr(c, CodeInvalid, err.Error())
+		return
+	}
+
+	// 过滤字段
+	h := ac.handlers[UPDATE]
+	data = ac.filterFields(h, data)
+
+	var chain *gom.Chain
+	if v, exists := c.Get("chain"); exists {
+		chain = v.(*gom.Chain)
+	} else {
+		chain = ac.db.Chain().Table(ac.tableName)
+	}
+
+	chain = chain.Eq("id", c.Param("id")).Values(data)
+	result, err := chain.Save()
+	if err != nil {
+		JsonErr(c, CodeError, err.Error())
+		return
+	}
+
+	JsonOk(c, result)
+}
+
+// Delete 删除记录
+func (ac *Crud) Delete(c *gin.Context) {
+	var chain *gom.Chain
+	if v, exists := c.Get("chain"); exists {
+		chain = v.(*gom.Chain)
+	} else {
+		chain = ac.db.Chain().Table(ac.tableName)
+	}
+
+	chain = chain.Eq("id", c.Param("id"))
+	result, err := chain.Delete()
+
+	if err != nil {
+		JsonErr(c, CodeError, err.Error())
+		return
+	}
+
+	JsonOk(c, gin.H{
+		"message": "deleted successfully",
+		"result":  result,
+	})
+}
+
+// 辅助函数
+func parsePagination(c *gin.Context) (page, size int) {
+	page, _ = strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ = strconv.Atoi(c.DefaultQuery("size", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 10
+	}
+	return
+}
+
+func parseQueryConditions(c *gin.Context, chain *gom.Chain) error {
+	for key, values := range c.Request.URL.Query() {
+		if len(values) == 0 || key == "page" || key == "size" || key == "sort" {
+			continue
+		}
+
+		value := values[0]
+		if value == "" {
+			continue
+		}
+
+		// 支持操作符: eq, ne, gt, ge, lt, le, like, in
+		// 格式: field__op=value
+		parts := strings.Split(key, "__")
+		field := parts[0]
+		op := "eq"
+		if len(parts) > 1 {
+			op = parts[1]
+		}
+
+		switch op {
+		case "eq":
+			chain = chain.Eq(field, value)
+		case "ne":
+			chain = chain.Ne(field, value)
+		case "gt":
+			chain = chain.Gt(field, value)
+		case "ge":
+			chain = chain.Ge(field, value)
+		case "lt":
+			chain = chain.Lt(field, value)
+		case "le":
+			chain = chain.Le(field, value)
+		case "like":
+			chain = chain.Like(field, value)
+		case "in":
+			chain = chain.In(field, strings.Split(value, ","))
+		default:
+			return fmt.Errorf("unsupported operator: %s", op)
+		}
+	}
+	return nil
+}
+
+// Register 注册所有CRUD路由
+func (ac *Crud) Register(r gin.IRouter) {
+	for _, h := range ac.handlers {
+		switch h.Method {
+		case http.MethodGet:
+			r.GET(h.Path, h.Handler)
+		case http.MethodPost:
+			r.POST(h.Path, h.Handler)
+		case http.MethodPut:
+			r.PUT(h.Path, h.Handler)
+		case http.MethodDelete:
+			r.DELETE(h.Path, h.Handler)
+		case http.MethodPatch:
+			r.PATCH(h.Path, h.Handler)
+		case "ANY", "*":
+			r.Any(h.Path, h.Handler)
+		}
+	}
 }
