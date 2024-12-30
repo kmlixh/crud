@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"net/http"
+
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -24,6 +27,7 @@ type TokenStore interface {
 	GetToken(token string) (*TokenDetail, error)
 	DeleteToken(token string) error
 	GetUserTokens(userID, userType string) ([]string, error)
+	CheckToken(token string) bool
 }
 
 // RedisTokenStore Redis实现的Token存储
@@ -117,4 +121,89 @@ func GenerateToken(userID, userType string, expiresIn time.Duration) TokenDetail
 		UserType:  userType,
 		ExpiresIn: expiresIn,
 	}
+}
+
+// CheckToken 检查指定token是否合法
+func (s *RedisTokenStore) CheckToken(token string) bool {
+	detail, err := s.GetToken(token)
+	if err != nil {
+		return false
+	}
+	return detail != nil
+}
+
+// CheckTokenGin 检查请求头中是否包含token，并校验token是否合法
+func (s *RedisTokenStore) CheckTokenGin(c *gin.Context) bool {
+	// 从请求头中获取token
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		// 如果请求头中没有token，尝试从查询参数中获取
+		token = c.Query("token")
+		if token == "" {
+			return false
+		}
+	}
+
+	// 如果token以"Bearer "开头，去掉这个前缀
+	if len(token) > 7 && token[:7] == "Bearer " {
+		token = token[7:]
+	}
+
+	// 检查token是否合法
+	detail, err := s.GetToken(token)
+	if err != nil {
+		return false
+	}
+
+	// 如果token合法，将用户信息存储到上下文中
+	if detail != nil {
+		c.Set("user_id", detail.UserID)
+		c.Set("user_type", detail.UserType)
+		c.Set("token", detail.Token)
+		return true
+	}
+
+	return false
+}
+
+// TokenAuthMiddleware Gin中间件，用于验证token
+func TokenAuthMiddleware(store *RedisTokenStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !store.CheckTokenGin(c) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"code":    CodeError,
+				"message": "unauthorized",
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
+// GetCurrentUser 从上下文中获取当前用户信息
+func GetCurrentUser(c *gin.Context) (userID, userType string, ok bool) {
+	userIDVal, ok1 := c.Get("user_id")
+	userTypeVal, ok2 := c.Get("user_type")
+	if !ok1 || !ok2 {
+		return "", "", false
+	}
+	userID, ok1 = userIDVal.(string)
+	userType, ok2 = userTypeVal.(string)
+	if !ok1 || !ok2 {
+		return "", "", false
+	}
+	return userID, userType, true
+}
+
+// GetCurrentToken 从上下文中获取当前token
+func GetCurrentToken(c *gin.Context) (token string, ok bool) {
+	tokenVal, exists := c.Get("token")
+	if !exists {
+		return "", false
+	}
+	token, ok = tokenVal.(string)
+	if !ok {
+		return "", false
+	}
+	return token, true
 }
