@@ -21,6 +21,54 @@ type TokenDetail struct {
 	ExpiresIn time.Duration `json:"expires_in"`
 }
 
+var (
+	// defaultTokenStore 默认的Token存储
+	defaultTokenStore TokenStore
+)
+
+// SetTokenStore 设置全局Token存储
+func SetTokenStore(store TokenStore) {
+	defaultTokenStore = store
+}
+
+// GetTokenStore 获取全局Token存储
+func GetTokenStore() TokenStore {
+	return defaultTokenStore
+}
+
+// GlobalCheckToken 全局检查token是否合法
+func GlobalCheckToken(token string) bool {
+	if defaultTokenStore == nil {
+		return false
+	}
+	return defaultTokenStore.CheckToken(token)
+}
+
+// GlobalCheckTokenGin 全局检查请求头中的token是否合法
+func GlobalCheckTokenGin(c *gin.Context) bool {
+	if defaultTokenStore == nil {
+		return false
+	}
+	if store, ok := defaultTokenStore.(*RedisTokenStore); ok {
+		return store.CheckTokenGin(c)
+	}
+	return false
+}
+
+// GlobalTokenAuthMiddleware 全局Token验证中间件
+func GlobalTokenAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !GlobalCheckTokenGin(c) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"code":    CodeError,
+				"message": "unauthorized",
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
 // TokenStore Token存储接口
 type TokenStore interface {
 	SaveToken(detail TokenDetail) error
@@ -206,4 +254,137 @@ func GetCurrentToken(c *gin.Context) (token string, ok bool) {
 		return "", false
 	}
 	return token, true
+}
+
+// GlobalSaveToken 全局保存Token
+func GlobalSaveToken(detail TokenDetail) error {
+	if defaultTokenStore == nil {
+		return fmt.Errorf("token store not initialized")
+	}
+	return defaultTokenStore.SaveToken(detail)
+}
+
+// GlobalGetToken 全局获取Token信息
+func GlobalGetToken(token string) (*TokenDetail, error) {
+	if defaultTokenStore == nil {
+		return nil, fmt.Errorf("token store not initialized")
+	}
+	return defaultTokenStore.GetToken(token)
+}
+
+// GlobalDeleteToken 全局删除Token
+func GlobalDeleteToken(token string) error {
+	if defaultTokenStore == nil {
+		return fmt.Errorf("token store not initialized")
+	}
+	return defaultTokenStore.DeleteToken(token)
+}
+
+// GlobalGetUserTokens 全局获取用户的所有Token
+func GlobalGetUserTokens(userID, userType string) ([]string, error) {
+	if defaultTokenStore == nil {
+		return nil, fmt.Errorf("token store not initialized")
+	}
+	return defaultTokenStore.GetUserTokens(userID, userType)
+}
+
+// GlobalGenerateToken 全局生成新的Token
+func GlobalGenerateToken(userID, userType string, expiresIn time.Duration) (TokenDetail, error) {
+	token := GenerateToken(userID, userType, expiresIn)
+	if err := GlobalSaveToken(token); err != nil {
+		return TokenDetail{}, fmt.Errorf("failed to save token: %v", err)
+	}
+	return token, nil
+}
+
+// GlobalGenerateAndSaveToken 全局生成并保存Token，如果已存在则先删除
+func GlobalGenerateAndSaveToken(userID, userType string, expiresIn time.Duration) (TokenDetail, error) {
+	if defaultTokenStore == nil {
+		return TokenDetail{}, fmt.Errorf("token store not initialized")
+	}
+
+	// 获取用户现有的所有token
+	existingTokens, err := GlobalGetUserTokens(userID, userType)
+	if err != nil {
+		return TokenDetail{}, fmt.Errorf("failed to get user tokens: %v", err)
+	}
+
+	// 删除现有的token
+	for _, t := range existingTokens {
+		if err := GlobalDeleteToken(t); err != nil {
+			return TokenDetail{}, fmt.Errorf("failed to delete existing token: %v", err)
+		}
+	}
+
+	// 生成并保存新token
+	return GlobalGenerateToken(userID, userType, expiresIn)
+}
+
+// GlobalValidateAndRefreshToken 全局验证Token并刷新过期时间
+func GlobalValidateAndRefreshToken(token string, expiresIn time.Duration) error {
+	if defaultTokenStore == nil {
+		return fmt.Errorf("token store not initialized")
+	}
+
+	// 获取token信息
+	detail, err := GlobalGetToken(token)
+	if err != nil {
+		return fmt.Errorf("failed to get token: %v", err)
+	}
+	if detail == nil {
+		return fmt.Errorf("token not found")
+	}
+
+	// 更新过期时间
+	detail.ExpiresIn = expiresIn
+	if err := GlobalSaveToken(*detail); err != nil {
+		return fmt.Errorf("failed to refresh token: %v", err)
+	}
+
+	return nil
+}
+
+// GlobalGetCurrentUserDetail 全局获取当前用户的完整Token信息
+func GlobalGetCurrentUserDetail(c *gin.Context) (*TokenDetail, error) {
+	token, ok := GetCurrentToken(c)
+	if !ok {
+		return nil, fmt.Errorf("token not found in context")
+	}
+	return GlobalGetToken(token)
+}
+
+// GlobalCheckTokenWithType 全局检查token是否合法并验证用户类型
+func GlobalCheckTokenWithType(token, requiredType string) bool {
+	if defaultTokenStore == nil {
+		return false
+	}
+	detail, err := GlobalGetToken(token)
+	if err != nil || detail == nil {
+		return false
+	}
+	return detail.UserType == requiredType
+}
+
+// GlobalTokenAuthMiddlewareWithType 全局Token验证中间件（带用户类型验证）
+func GlobalTokenAuthMiddlewareWithType(requiredType string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !GlobalCheckTokenGin(c) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"code":    CodeError,
+				"message": "unauthorized",
+			})
+			return
+		}
+
+		userType, _, ok := GetCurrentUser(c)
+		if !ok || userType != requiredType {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    CodeError,
+				"message": "forbidden",
+			})
+			return
+		}
+
+		c.Next()
+	}
 }

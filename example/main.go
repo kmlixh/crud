@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kmlixh/crud"
 	"github.com/kmlixh/gom/v4"
 	_ "github.com/kmlixh/gom/v4/factory/mysql"
+	"github.com/redis/go-redis/v9"
 )
 
 // User 用户模型
@@ -30,41 +32,45 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// 初始化 Redis 连接
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+
+	// 创建 Redis token 存储并设置为全局存储
+	tokenStore := crud.NewRedisTokenStore(redisClient, "app")
+	crud.SetTokenStore(tokenStore)
+
 	// 创建路由
 	r := gin.Default()
 
-	// 创建自动CRUD处理器 - 方式1：显式指定表名
-	userCrud1 := crud.New(db, &User{}, "users")
-
-	// 创建自动CRUD处理器 - 方式2：使用空表名，自动获取
-	userCrud2 := crud.New(db, &User{}, "")
-
-	// 创建自动CRUD处理器 - 方式3：直接使用 New2
-	userCrud3 := crud.New2(db, &User{})
+	// 创建自动CRUD处理器
+	userCrud := crud.New2(db, &User{})
 
 	// 修改默认处理器的字段控制
-	if listHandler, ok := userCrud1.GetHandler(crud.LIST); ok {
+	if listHandler, ok := userCrud.GetHandler(crud.LIST); ok {
 		listHandler.AllowedFields = []string{"id", "username", "email", "status", "created_at"} // 列表不返回密码
-		userCrud1.AddHandler(crud.LIST, listHandler.Method, listHandler)
+		userCrud.AddHandler(crud.LIST, listHandler.Method, listHandler)
 	}
 
-	if detailHandler, ok := userCrud1.GetHandler(crud.SINGLE); ok {
+	if detailHandler, ok := userCrud.GetHandler(crud.SINGLE); ok {
 		detailHandler.AllowedFields = []string{"id", "username", "email", "age", "status", "created_at", "updated_at"} // 详情不返回密码
-		userCrud1.AddHandler(crud.SINGLE, detailHandler.Method, detailHandler)
+		userCrud.AddHandler(crud.SINGLE, detailHandler.Method, detailHandler)
 	}
 
-	if updateHandler, ok := userCrud1.GetHandler(crud.UPDATE); ok {
+	if updateHandler, ok := userCrud.GetHandler(crud.UPDATE); ok {
 		updateHandler.AllowedFields = []string{"username", "email", "age", "status"} // 更新时不允许修改密码和时间戳
-		userCrud1.AddHandler(crud.UPDATE, updateHandler.Method, updateHandler)
+		userCrud.AddHandler(crud.UPDATE, updateHandler.Method, updateHandler)
 	}
 
-	// 添加自定义处理器 - 修改密码
-	passwordHandler := crud.NewHandler("/change-password", http.MethodPost).
+	// 登录处理器
+	loginHandler := crud.NewHandler("/login", http.MethodPost).
 		PreProcess(func(ctx *crud.ProcessContext) error {
 			var req struct {
-				ID          int64  `json:"id" binding:"required"`
-				OldPassword string `json:"old_password" binding:"required"`
-				NewPassword string `json:"new_password" binding:"required,min=6"`
+				Username string `json:"username" binding:"required"`
+				Password string `json:"password" binding:"required"`
 			}
 			if err := ctx.GinContext.ShouldBindJSON(&req); err != nil {
 				return fmt.Errorf("invalid request: %v", err)
@@ -74,91 +80,84 @@ func main() {
 		}).
 		BuildQuery(func(ctx *crud.ProcessContext) error {
 			req := ctx.Data["request"].(struct {
-				ID          int64
-				OldPassword string
-				NewPassword string
+				Username string
+				Password string
 			})
 
-			// 验证旧密码
-			result := db.Chain().Table("users").
-				Eq("id", req.ID).
-				Eq("password", req.OldPassword).
-				One()
-
+			ctx.Chain = db.Chain().Table("users").
+				Eq("username", req.Username).
+				Eq("password", req.Password)
+			return nil
+		}).
+		ExecuteStep(func(ctx *crud.ProcessContext) error {
+			result := ctx.Chain.One()
+			if err := result.Error(); err != nil {
+				return fmt.Errorf("failed to query user: %v", err)
+			}
 			if result.Empty() {
-				return fmt.Errorf("invalid old password")
+				return fmt.Errorf("invalid username or password")
 			}
-
-			// 准备更新语句
-			ctx.Chain = db.Chain().Table("users").
-				Eq("id", req.ID).
-				Values(map[string]interface{}{
-					"password": req.NewPassword,
-				})
-			return nil
-		}).
-		ExecuteStep(func(ctx *crud.ProcessContext) error {
-			result, err := ctx.Chain.Save()
-			if err != nil {
-				return fmt.Errorf("failed to update password: %v", err)
-			}
-			ctx.Data["result"] = result
+			ctx.Data["user"] = result.Data[0]
 			return nil
 		}).
 		PostProcess(func(ctx *crud.ProcessContext) error {
-			crud.CodeMsgFunc(ctx.GinContext, crud.CodeSuccess, "密码修改成功", nil)
-			return nil
-		})
-
-	userCrud1.AddHandler("change_password", passwordHandler.Method, *passwordHandler)
-
-	// 添加自定义处理器 - 批量更新状态
-	batchStatusHandler := crud.NewHandler("/batch/status", http.MethodPost).
-		PreProcess(func(ctx *crud.ProcessContext) error {
-			var req struct {
-				IDs    []int64 `json:"ids" binding:"required,min=1"`
-				Status string  `json:"status" binding:"required,oneof=active inactive deleted"`
+			user := ctx.Data["user"].(map[string]interface{})
+			// 生成 token
+			token := crud.GenerateToken(
+				fmt.Sprintf("%v", user["id"]),
+				"user",
+				24*time.Hour,
+			)
+			// 保存 token
+			if err := crud.GetTokenStore().SaveToken(token); err != nil {
+				return fmt.Errorf("failed to save token: %v", err)
 			}
-			if err := ctx.GinContext.ShouldBindJSON(&req); err != nil {
-				return fmt.Errorf("invalid request: %v", err)
-			}
-			ctx.Data["request"] = req
-			return nil
-		}).
-		BuildQuery(func(ctx *crud.ProcessContext) error {
-			req := ctx.Data["request"].(struct {
-				IDs    []int64
-				Status string
+			crud.CodeMsgFunc(ctx.GinContext, crud.CodeSuccess, "login success", gin.H{
+				"token": token.Token,
+				"user":  user,
 			})
-
-			ctx.Chain = db.Chain().Table("users").
-				In("id", req.IDs).
-				Values(map[string]interface{}{
-					"status": req.Status,
-				})
-			return nil
-		}).
-		ExecuteStep(func(ctx *crud.ProcessContext) error {
-			result, err := ctx.Chain.Save()
-			if err != nil {
-				return fmt.Errorf("failed to update status: %v", err)
-			}
-			ctx.Data["result"] = result
-			return nil
-		}).
-		PostProcess(func(ctx *crud.ProcessContext) error {
-			crud.CodeMsgFunc(ctx.GinContext, crud.CodeSuccess, "状态更新成功", ctx.Data["result"])
 			return nil
 		})
 
-	userCrud1.AddHandler("batch_update_status", batchStatusHandler.Method, *batchStatusHandler)
+	userCrud.AddHandler("login", loginHandler.Method, *loginHandler)
 
-	// 注册路由 - 展示三种不同方式创建的处理器
+	// 注册路由
 	api := r.Group("/api")
 	{
-		userCrud1.Register(api.Group("/users/v1")) // 方式1：显式指定表名
-		userCrud2.Register(api.Group("/users/v2")) // 方式2：使用空表名，自动获取
-		userCrud3.Register(api.Group("/users/v3")) // 方式3：直接使用 New2
+		// 公开接口
+		userCrud.Register(api.Group("/public/users"))
+
+		// 需要认证的接口
+		auth := api.Group("/users")
+		auth.Use(crud.GlobalTokenAuthMiddleware())
+		userCrud.Register(auth)
+
+		// 获取当前用户信息
+		auth.GET("/me", func(c *gin.Context) {
+			userID, userType, ok := crud.GetCurrentUser(c)
+			if !ok {
+				crud.CodeMsgFunc(c, crud.CodeError, "unauthorized", nil)
+				return
+			}
+			crud.CodeMsgFunc(c, crud.CodeSuccess, "success", gin.H{
+				"user_id":   userID,
+				"user_type": userType,
+			})
+		})
+
+		// 退出登录
+		auth.POST("/logout", func(c *gin.Context) {
+			token, ok := crud.GetCurrentToken(c)
+			if !ok {
+				crud.CodeMsgFunc(c, crud.CodeError, "unauthorized", nil)
+				return
+			}
+			if err := crud.GetTokenStore().DeleteToken(token); err != nil {
+				crud.CodeMsgFunc(c, crud.CodeError, fmt.Sprintf("failed to logout: %v", err), nil)
+				return
+			}
+			crud.CodeMsgFunc(c, crud.CodeSuccess, "logout success", nil)
+		})
 	}
 
 	// 启动服务器
