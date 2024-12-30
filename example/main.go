@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 
@@ -22,29 +23,6 @@ type User struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-// CodeMessage 响应码和消息
-type CodeMessage struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-// CustomResponse 自定义响应结构
-type CustomResponse struct {
-	CodeMessage
-	Data interface{} `json:"data"`
-}
-
-// NewResponse 创建新的响应
-func NewResponse(code int, message string, data interface{}) CustomResponse {
-	return CustomResponse{
-		CodeMessage: CodeMessage{
-			Code:    code,
-			Message: message,
-		},
-		Data: data,
-	}
-}
-
 func main() {
 	// 初始化数据库连接
 	db, err := gom.Open("mysql", "root:password@tcp(localhost:3306)/test?charset=utf8mb4&parseTime=True&loc=Local", false)
@@ -55,84 +33,51 @@ func main() {
 	// 创建路由
 	r := gin.Default()
 
-	// 创建自动CRUD处理器
-	userCrud := crud.New(db, &User{}, "users")
+	// 创建自动CRUD处理器 - 方式1：显式指定表名
+	userCrud1 := crud.New(db, &User{}, "users")
+
+	// 创建自动CRUD处理器 - 方式2：使用空表名，自动获取
+	userCrud2 := crud.New(db, &User{}, "")
+
+	// 创建自动CRUD处理器 - 方式3：直接使用 New2
+	userCrud3 := crud.New2(db, &User{})
 
 	// 修改默认处理器的字段控制
-	if listHandler, ok := userCrud.GetHandler(crud.LIST); ok {
+	if listHandler, ok := userCrud1.GetHandler(crud.LIST); ok {
 		listHandler.AllowedFields = []string{"id", "username", "email", "status", "created_at"} // 列表不返回密码
-		userCrud.AddHandler(crud.LIST, listHandler.Method, listHandler)
+		userCrud1.AddHandler(crud.LIST, listHandler.Method, listHandler)
 	}
 
-	if detailHandler, ok := userCrud.GetHandler(crud.SINGLE); ok {
+	if detailHandler, ok := userCrud1.GetHandler(crud.SINGLE); ok {
 		detailHandler.AllowedFields = []string{"id", "username", "email", "age", "status", "created_at", "updated_at"} // 详情不返回密码
-		userCrud.AddHandler(crud.SINGLE, detailHandler.Method, detailHandler)
+		userCrud1.AddHandler(crud.SINGLE, detailHandler.Method, detailHandler)
 	}
 
-	if updateHandler, ok := userCrud.GetHandler(crud.UPDATE); ok {
+	if updateHandler, ok := userCrud1.GetHandler(crud.UPDATE); ok {
 		updateHandler.AllowedFields = []string{"username", "email", "age", "status"} // 更新时不允许修改密码和时间戳
-		userCrud.AddHandler(crud.UPDATE, updateHandler.Method, updateHandler)
+		userCrud1.AddHandler(crud.UPDATE, updateHandler.Method, updateHandler)
 	}
-
-	// 添加自定义处理器 - 获取活跃用户
-	userCrud.AddHandler("active_users", http.MethodGet, crud.ItemHandler{
-		Path:          "/active",
-		Method:        http.MethodGet,
-		AllowedFields: []string{"id", "username", "status"}, // 只返回必要字段
-		Handler: func(c *gin.Context) {
-			chain := db.Chain().Table("users").Eq("status", "active")
-			result := chain.List()
-			if err := result.Error(); err != nil {
-				crud.JsonErr(c, crud.CodeError, err.Error())
-				return
-			}
-			crud.JsonOk(c, result.Data)
-		},
-	})
-
-	// 添加自定义处理器 - 批量更新状态
-	userCrud.AddHandler("batch_update_status", http.MethodPost, crud.ItemHandler{
-		Path:          "/batch/status",
-		Method:        http.MethodPost,
-		AllowedFields: []string{"status"}, // 只允许更新状态字段
-		Handler: func(c *gin.Context) {
-			var req struct {
-				IDs    []int64 `json:"ids"`
-				Status string  `json:"status"`
-			}
-			if err := c.ShouldBindJSON(&req); err != nil {
-				crud.JsonErr(c, crud.CodeInvalid, err.Error())
-				return
-			}
-
-			chain := db.Chain().Table("users").In("id", req.IDs).Values(map[string]interface{}{
-				"status": req.Status,
-			})
-			result, err := chain.Save()
-			if err != nil {
-				crud.JsonErr(c, crud.CodeError, err.Error())
-				return
-			}
-
-			crud.JsonOk(c, result)
-		},
-	})
 
 	// 添加自定义处理器 - 修改密码
-	userCrud.AddHandler("change_password", http.MethodPost, crud.ItemHandler{
-		Path:          "/change-password",
-		Method:        http.MethodPost,
-		AllowedFields: []string{"password"}, // 只允许更新密码字段
-		Handler: func(c *gin.Context) {
+	passwordHandler := crud.NewHandler("/change-password", http.MethodPost).
+		PreProcess(func(ctx *crud.ProcessContext) error {
 			var req struct {
-				ID          int64  `json:"id"`
-				OldPassword string `json:"old_password"`
-				NewPassword string `json:"new_password"`
+				ID          int64  `json:"id" binding:"required"`
+				OldPassword string `json:"old_password" binding:"required"`
+				NewPassword string `json:"new_password" binding:"required,min=6"`
 			}
-			if err := c.ShouldBindJSON(&req); err != nil {
-				crud.JsonErr(c, crud.CodeInvalid, err.Error())
-				return
+			if err := ctx.GinContext.ShouldBindJSON(&req); err != nil {
+				return fmt.Errorf("invalid request: %v", err)
 			}
+			ctx.Data["request"] = req
+			return nil
+		}).
+		BuildQuery(func(ctx *crud.ProcessContext) error {
+			req := ctx.Data["request"].(struct {
+				ID          int64
+				OldPassword string
+				NewPassword string
+			})
 
 			// 验证旧密码
 			result := db.Chain().Table("users").
@@ -141,30 +86,79 @@ func main() {
 				One()
 
 			if result.Empty() {
-				crud.JsonErr(c, crud.CodeInvalid, "invalid old password")
-				return
+				return fmt.Errorf("invalid old password")
 			}
 
-			// 更新新密码
-			chain := db.Chain().Table("users").
+			// 准备更新语句
+			ctx.Chain = db.Chain().Table("users").
 				Eq("id", req.ID).
 				Values(map[string]interface{}{
 					"password": req.NewPassword,
 				})
-			result2, err := chain.Save()
+			return nil
+		}).
+		ExecuteStep(func(ctx *crud.ProcessContext) error {
+			result, err := ctx.Chain.Save()
 			if err != nil {
-				crud.JsonErr(c, crud.CodeError, err.Error())
-				return
+				return fmt.Errorf("failed to update password: %v", err)
 			}
+			ctx.Data["result"] = result
+			return nil
+		}).
+		PostProcess(func(ctx *crud.ProcessContext) error {
+			crud.CodeMsgFunc(ctx.GinContext, crud.CodeSuccess, "密码修改成功", nil)
+			return nil
+		})
 
-			crud.JsonOk(c, result2)
-		},
-	})
+	userCrud1.AddHandler("change_password", passwordHandler.Method, *passwordHandler)
 
-	// 注册路由
+	// 添加自定义处理器 - 批量更新状态
+	batchStatusHandler := crud.NewHandler("/batch/status", http.MethodPost).
+		PreProcess(func(ctx *crud.ProcessContext) error {
+			var req struct {
+				IDs    []int64 `json:"ids" binding:"required,min=1"`
+				Status string  `json:"status" binding:"required,oneof=active inactive deleted"`
+			}
+			if err := ctx.GinContext.ShouldBindJSON(&req); err != nil {
+				return fmt.Errorf("invalid request: %v", err)
+			}
+			ctx.Data["request"] = req
+			return nil
+		}).
+		BuildQuery(func(ctx *crud.ProcessContext) error {
+			req := ctx.Data["request"].(struct {
+				IDs    []int64
+				Status string
+			})
+
+			ctx.Chain = db.Chain().Table("users").
+				In("id", req.IDs).
+				Values(map[string]interface{}{
+					"status": req.Status,
+				})
+			return nil
+		}).
+		ExecuteStep(func(ctx *crud.ProcessContext) error {
+			result, err := ctx.Chain.Save()
+			if err != nil {
+				return fmt.Errorf("failed to update status: %v", err)
+			}
+			ctx.Data["result"] = result
+			return nil
+		}).
+		PostProcess(func(ctx *crud.ProcessContext) error {
+			crud.CodeMsgFunc(ctx.GinContext, crud.CodeSuccess, "状态更新成功", ctx.Data["result"])
+			return nil
+		})
+
+	userCrud1.AddHandler("batch_update_status", batchStatusHandler.Method, *batchStatusHandler)
+
+	// 注册路由 - 展示三种不同方式创建的处理器
 	api := r.Group("/api")
 	{
-		userCrud.Register(api.Group("/users"))
+		userCrud1.Register(api.Group("/users/v1")) // 方式1：显式指定表名
+		userCrud2.Register(api.Group("/users/v2")) // 方式2：使用空表名，自动获取
+		userCrud3.Register(api.Group("/users/v3")) // 方式3：直接使用 New2
 	}
 
 	// 启动服务器
