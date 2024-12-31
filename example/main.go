@@ -97,7 +97,7 @@ func main() {
 			return nil
 		})
 
-	userCrud.AddHandler("active_users", activeUsersHandler.Method, *activeUsersHandler)
+	userCrud.AddHandler("active_users", activeUsersHandler.Method, activeUsersHandler)
 
 	// 注册用户相关路由
 	userCrud.RegisterRoutes(api, "/users")

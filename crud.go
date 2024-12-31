@@ -64,6 +64,7 @@ type ItemHandler struct {
 	Conds         []QueryCondFunc                              // 查询条件函数
 	AllowedFields []string                                     // 允许的字段列表
 	Orders        []*define.OrderBy                            // 排序配置
+	description   string                                       // 处理器描述
 	Processors    map[ProcessStep]map[StepPhase]ProcessHandler // 处理器映射
 }
 
@@ -232,10 +233,11 @@ func (h *ItemHandler) GetProcessor(step ProcessStep, phase StepPhase) ProcessHan
 
 // Crud 自动CRUD处理器
 type Crud struct {
-	db        *gom.DB
-	entity    interface{}
-	tableName string
-	handlers  map[string]ItemHandler
+	db          *gom.DB                 // 数据库连接
+	entity      interface{}             // 实体对象
+	tableName   string                  // 表名
+	handlers    map[string]*ItemHandler // 处理器映射
+	description string                  // 实体描述
 }
 
 // DefaultProcessors 默认处理器集合
@@ -540,89 +542,130 @@ func (dp *DefaultProcessors) Delete() *ItemHandler {
 	return h
 }
 
-// New2 创建新的Crud实例（使用 gom.DB 的 GetTableName 方法获取表名）
-func New2(db *gom.DB, entity interface{}, defaultHandlers ...string) *Crud {
-	tableName, err := db.GetTableName(entity)
-	if err != nil {
-		// 如果获取表名失败，返回空表名，让 New 方法处理
-		return New(db, entity, "", defaultHandlers...)
+// New2 创建新的CRUD处理器（自动获取表名）
+func New2(db *gom.DB, entity interface{}) *Crud {
+	crud := &Crud{
+		db:       db,
+		entity:   entity,
+		handlers: make(map[string]*ItemHandler),
 	}
-	return New(db, entity, tableName, defaultHandlers...)
+
+	// 初始化默认处理器
+	crud.initDefaultHandlers()
+	cruds = append(cruds, crud)
+	return crud
 }
 
-// New 创建新的Crud实例
-func New(db *gom.DB, entity interface{}, tableName string, defaultHandlers ...string) *Crud {
-	// 如果表名为空，则使用 New2 方法
-	if tableName == "" {
-		return New2(db, entity, defaultHandlers...)
-	}
-
+// New 创建新的CRUD处理器
+func New(db *gom.DB, entity interface{}, tableName string) *Crud {
 	crud := &Crud{
 		db:        db,
 		entity:    entity,
 		tableName: tableName,
-		handlers:  make(map[string]ItemHandler),
+		handlers:  make(map[string]*ItemHandler),
 	}
 
-	// 如果没有指定默认处理器，则创建所有默认处理器
-	if len(defaultHandlers) == 0 {
-		defaultHandlers = []string{LIST, PAGE, SINGLE, SAVE, UPDATE, DELETE}
-	}
-
-	// 创建默认处理器集合
-	processors := NewDefaultProcessors(crud)
-
-	// 创建指定的默认处理器
-	handlerMap := map[string]*ItemHandler{
-		LIST:   processors.List(),
-		PAGE:   processors.List(), // 使用相同的列表处理器
-		SINGLE: processors.Get(),
-		SAVE:   processors.Create(),
-		UPDATE: processors.Update(),
-		DELETE: processors.Delete(),
-	}
-
-	// 注册指定的默认处理器
-	for _, name := range defaultHandlers {
-		if handler, ok := handlerMap[name]; ok {
-			handler.Handler = handler.HandleRequest // 设置处理函数
-			crud.handlers[name] = *handler
-		}
-	}
-
+	// 初始化默认处理器
+	crud.initDefaultHandlers()
+	cruds = append(cruds, crud)
 	return crud
 }
 
+// initDefaultHandlers 初始化默认处理器
+func (c *Crud) initDefaultHandlers() {
+	// 列表处理器
+	listHandler := &ItemHandler{
+		Path:   "",
+		Method: http.MethodGet,
+	}
+	listHandler.Handler = listHandler.HandleRequest
+	c.handlers[LIST] = listHandler
+
+	// 详情处理器
+	detailHandler := &ItemHandler{
+		Path:   "/:id",
+		Method: http.MethodGet,
+	}
+	detailHandler.Handler = detailHandler.HandleRequest
+	c.handlers[SINGLE] = detailHandler
+
+	// 创建处理器
+	createHandler := &ItemHandler{
+		Path:   "",
+		Method: http.MethodPost,
+	}
+	createHandler.Handler = createHandler.HandleRequest
+	c.handlers[SAVE] = createHandler
+
+	// 更新处理器
+	updateHandler := &ItemHandler{
+		Path:   "/:id",
+		Method: http.MethodPut,
+	}
+	updateHandler.Handler = updateHandler.HandleRequest
+	c.handlers[UPDATE] = updateHandler
+
+	// 删除处理器
+	deleteHandler := &ItemHandler{
+		Path:   "/:id",
+		Method: http.MethodDelete,
+	}
+	deleteHandler.Handler = deleteHandler.HandleRequest
+	c.handlers[DELETE] = deleteHandler
+}
+
 // GetHandler 获取指定名称的处理器
-func (ac *Crud) GetHandler(name string) (ItemHandler, bool) {
-	h, ok := ac.handlers[name]
-	return h, ok
+func (ac *Crud) GetHandler(name string) (*ItemHandler, bool) {
+	handler, ok := ac.handlers[name]
+	if !ok {
+		return nil, false
+	}
+	return handler, true
 }
 
 // AddHandler 添加自定义处理器
-func (ac *Crud) AddHandler(name string, method string, handler ItemHandler) {
+func (ac *Crud) AddHandler(name string, method string, handler *ItemHandler) {
 	ac.handlers[name] = handler
 }
 
-// filterFields 过滤字段（用于查询和更新）
-func (ac *Crud) filterFields(h ItemHandler, data map[string]interface{}) map[string]interface{} {
+// filterFields 过滤字段
+func (c *Crud) filterFields(h *ItemHandler, data interface{}) map[string]interface{} {
 	if len(h.AllowedFields) == 0 {
-		return data
-	}
-
-	filtered := make(map[string]interface{})
-	allowedMap := make(map[string]bool)
-	for _, f := range h.AllowedFields {
-		allowedMap[f] = true
-	}
-
-	for k, v := range data {
-		if allowedMap[k] {
-			filtered[k] = v
+		if m, ok := data.(map[string]interface{}); ok {
+			return m
 		}
+		return nil
 	}
 
-	return filtered
+	allowedMap := make(map[string]bool)
+	for _, field := range h.AllowedFields {
+		allowedMap[field] = true
+	}
+
+	switch v := data.(type) {
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+		for key, value := range v {
+			if allowedMap[key] {
+				result[key] = value
+			}
+		}
+		return result
+	case []map[string]interface{}:
+		// 如果是数组，只返回第一个元素
+		if len(v) > 0 {
+			result := make(map[string]interface{})
+			for key, value := range v[0] {
+				if allowedMap[key] {
+					result[key] = value
+				}
+			}
+			return result
+		}
+		return make(map[string]interface{})
+	default:
+		return make(map[string]interface{})
+	}
 }
 
 // List 列表查询
@@ -924,11 +967,19 @@ var (
 
 // HandlerInfo 处理器信息
 type HandlerInfo struct {
-	Path       string   `json:"path"`       // 完整路径
-	Method     string   `json:"method"`     // HTTP方法
-	Model      string   `json:"model"`      // 模型名称
-	Fields     []string `json:"fields"`     // 允许的字段
-	Operations string   `json:"operations"` // 操作类型
+	Path        string   `json:"path"`        // 完整路径
+	Method      string   `json:"method"`      // HTTP方法
+	Model       string   `json:"model"`       // 模型名称
+	Fields      []string `json:"fields"`      // 允许的字段
+	Operations  string   `json:"operations"`  // 操作类型
+	Description string   `json:"description"` // 处理器描述
+}
+
+// ModelInfo 模型信息
+type ModelInfo struct {
+	Name        string        `json:"name"`        // 模型名称
+	Description string        `json:"description"` // 模型描述
+	Handlers    []HandlerInfo `json:"handlers"`    // 处理器列表
 }
 
 // RegisterHandler 注册处理器信息
@@ -951,11 +1002,12 @@ func (c *Crud) RegisterRoutes(group *gin.RouterGroup, path string) {
 
 		// 记录路由信息
 		info := HandlerInfo{
-			Path:       fullPath,
-			Method:     handler.Method,
-			Model:      modelName,
-			Fields:     handler.AllowedFields,
-			Operations: string(name),
+			Path:        fullPath,
+			Method:      handler.Method,
+			Model:       modelName,
+			Fields:      handler.AllowedFields,
+			Operations:  name,
+			Description: handler.description,
 		}
 		c.RegisterHandler(modelName, info)
 	}
@@ -964,7 +1016,24 @@ func (c *Crud) RegisterRoutes(group *gin.RouterGroup, path string) {
 // RegisterApi 注册API信息路由
 func RegisterApi(router gin.IRouter, path string) {
 	router.GET(path, func(c *gin.Context) {
-		JsonOk(c, registeredHandlers)
+		// 将 map 转换为 slice，以便添加模型描述
+		models := make([]ModelInfo, 0)
+		for modelName, handlers := range registeredHandlers {
+			// 查找第一个处理器的 Crud 实例以获取描述
+			var description string
+			for _, crud := range cruds {
+				if reflect.TypeOf(crud.entity).Elem().Name() == modelName {
+					description = crud.description
+					break
+				}
+			}
+			models = append(models, ModelInfo{
+				Name:        modelName,
+				Description: description,
+				Handlers:    handlers,
+			})
+		}
+		JsonOk(c, models)
 	})
 }
 
@@ -972,3 +1041,18 @@ func RegisterApi(router gin.IRouter, path string) {
 func GetRegisteredHandlers() map[string][]HandlerInfo {
 	return registeredHandlers
 }
+
+// SetDescription 设置实体描述
+func (c *Crud) SetDescription(desc string) *Crud {
+	c.description = desc
+	return c
+}
+
+// SetDescription 设置处理器描述
+func (h *ItemHandler) SetDescription(desc string) *ItemHandler {
+	h.description = desc
+	return h
+}
+
+// 存储所有的 Crud 实例
+var cruds []*Crud
