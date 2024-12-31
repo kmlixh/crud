@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kmlixh/crud"
@@ -46,13 +45,15 @@ func main() {
 	// 创建路由
 	r := gin.Default()
 
+	// 创建API组
+	api := r.Group("/api")
+
 	// 创建自动CRUD处理器
 	userCrud := crud.New2(db, &User{})
 
 	// 修改默认处理器的字段控制
 	if listHandler, ok := userCrud.GetHandler(crud.LIST); ok {
 		listHandler.AllowedFields = []string{"id", "username", "email", "status", "created_at"} // 列表不返回密码
-		// 默认按创建时间降序，用户名升序排序
 		chain := db.Chain()
 		chain.OrderByDesc("created_at").OrderBy("username")
 		listHandler.BuildQuery(func(ctx *crud.ProcessContext) error {
@@ -98,103 +99,12 @@ func main() {
 
 	userCrud.AddHandler("active_users", activeUsersHandler.Method, *activeUsersHandler)
 
-	// 登录处理器
-	loginHandler := crud.NewHandler("/login", http.MethodPost).
-		PreProcess(func(ctx *crud.ProcessContext) error {
-			var req struct {
-				Username string `json:"username" binding:"required"`
-				Password string `json:"password" binding:"required"`
-			}
-			if err := ctx.GinContext.ShouldBindJSON(&req); err != nil {
-				return fmt.Errorf("invalid request: %v", err)
-			}
-			ctx.Data["request"] = req
-			return nil
-		}).
-		BuildQuery(func(ctx *crud.ProcessContext) error {
-			req := ctx.Data["request"].(struct {
-				Username string
-				Password string
-			})
+	// 注册用户相关路由
+	userCrud.RegisterRoutes(api, "/users")
 
-			ctx.Chain = db.Chain().Table("users").
-				Eq("username", req.Username).
-				Eq("password", req.Password)
-			return nil
-		}).
-		ExecuteStep(func(ctx *crud.ProcessContext) error {
-			result := ctx.Chain.One()
-			if err := result.Error(); err != nil {
-				return fmt.Errorf("failed to query user: %v", err)
-			}
-			if result.Empty() {
-				return fmt.Errorf("invalid username or password")
-			}
-			ctx.Data["user"] = result.Data[0]
-			return nil
-		}).
-		PostProcess(func(ctx *crud.ProcessContext) error {
-			user := ctx.Data["user"].(map[string]interface{})
-			// 生成 token
-			token := crud.GenerateToken(
-				fmt.Sprintf("%v", user["id"]),
-				"user",
-				24*time.Hour,
-			)
-			// 保存 token
-			if err := crud.GetTokenStore().SaveToken(token); err != nil {
-				return fmt.Errorf("failed to save token: %v", err)
-			}
-			crud.CodeMsgFunc(ctx.GinContext, crud.CodeSuccess, "login success", gin.H{
-				"token": token.Token,
-				"user":  user,
-			})
-			return nil
-		})
-
-	userCrud.AddHandler("login", loginHandler.Method, *loginHandler)
-
-	// 注册路由
-	api := r.Group("/api")
-	{
-		// 公开接口
-		userCrud.Register(api.Group("/public/users"))
-
-		// 需要认证的接口
-		auth := api.Group("/users")
-		auth.Use(crud.GlobalTokenAuthMiddleware())
-		userCrud.Register(auth)
-
-		// 获取当前用户信息
-		auth.GET("/me", func(c *gin.Context) {
-			userID, userType, ok := crud.GetCurrentUser(c)
-			if !ok {
-				crud.CodeMsgFunc(c, crud.CodeError, "unauthorized", nil)
-				return
-			}
-			crud.CodeMsgFunc(c, crud.CodeSuccess, "success", gin.H{
-				"user_id":   userID,
-				"user_type": userType,
-			})
-		})
-
-		// 退出登录
-		auth.POST("/logout", func(c *gin.Context) {
-			token, ok := crud.GetCurrentToken(c)
-			if !ok {
-				crud.CodeMsgFunc(c, crud.CodeError, "unauthorized", nil)
-				return
-			}
-			if err := crud.GetTokenStore().DeleteToken(token); err != nil {
-				crud.CodeMsgFunc(c, crud.CodeError, fmt.Sprintf("failed to logout: %v", err), nil)
-				return
-			}
-			crud.CodeMsgFunc(c, crud.CodeSuccess, "logout success", nil)
-		})
-	}
+	// 注册API信息路由
+	crud.RegisterApi(r, "/api-info")
 
 	// 启动服务器
-	if err := r.Run(":8080"); err != nil {
-		log.Fatal(err)
-	}
+	r.Run(":8080")
 }

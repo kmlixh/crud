@@ -3,6 +3,7 @@ package crud
 import (
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -914,4 +915,60 @@ func applyOrderBy(chain *gom.Chain, orders []*define.OrderBy) *gom.Chain {
 func (h *ItemHandler) SetOrders(orders ...*define.OrderBy) *ItemHandler {
 	h.Orders = orders
 	return h
+}
+
+// 全局路由信息
+var (
+	registeredHandlers = make(map[string][]HandlerInfo)
+)
+
+// HandlerInfo 处理器信息
+type HandlerInfo struct {
+	Path       string   `json:"path"`       // 完整路径
+	Method     string   `json:"method"`     // HTTP方法
+	Model      string   `json:"model"`      // 模型名称
+	Fields     []string `json:"fields"`     // 允许的字段
+	Operations string   `json:"operations"` // 操作类型
+}
+
+// RegisterHandler 注册处理器信息
+func (c *Crud) RegisterHandler(modelName string, info HandlerInfo) {
+	if _, ok := registeredHandlers[modelName]; !ok {
+		registeredHandlers[modelName] = make([]HandlerInfo, 0)
+	}
+	registeredHandlers[modelName] = append(registeredHandlers[modelName], info)
+}
+
+// RegisterRoutes 注册路由并记录信息
+func (c *Crud) RegisterRoutes(group *gin.RouterGroup, path string) {
+	modelName := reflect.TypeOf(c.entity).Elem().Name()
+	basePath := path
+
+	// 注册默认处理器
+	for name, handler := range c.handlers {
+		fullPath := basePath + handler.Path
+		group.Handle(handler.Method, fullPath, handler.Handler)
+
+		// 记录路由信息
+		info := HandlerInfo{
+			Path:       fullPath,
+			Method:     handler.Method,
+			Model:      modelName,
+			Fields:     handler.AllowedFields,
+			Operations: string(name),
+		}
+		c.RegisterHandler(modelName, info)
+	}
+}
+
+// RegisterApi 注册API信息路由
+func RegisterApi(router gin.IRouter, path string) {
+	router.GET(path, func(c *gin.Context) {
+		JsonOk(c, registeredHandlers)
+	})
+}
+
+// GetRegisteredHandlers 获取所有注册的处理器信息
+func GetRegisteredHandlers() map[string][]HandlerInfo {
+	return registeredHandlers
 }
