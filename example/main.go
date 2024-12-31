@@ -52,6 +52,13 @@ func main() {
 	// 修改默认处理器的字段控制
 	if listHandler, ok := userCrud.GetHandler(crud.LIST); ok {
 		listHandler.AllowedFields = []string{"id", "username", "email", "status", "created_at"} // 列表不返回密码
+		// 默认按创建时间降序，用户名升序排序
+		chain := db.Chain()
+		chain.OrderByDesc("created_at").OrderBy("username")
+		listHandler.BuildQuery(func(ctx *crud.ProcessContext) error {
+			ctx.Chain = chain
+			return nil
+		})
 		userCrud.AddHandler(crud.LIST, listHandler.Method, listHandler)
 	}
 
@@ -64,6 +71,32 @@ func main() {
 		updateHandler.AllowedFields = []string{"username", "email", "age", "status"} // 更新时不允许修改密码和时间戳
 		userCrud.AddHandler(crud.UPDATE, updateHandler.Method, updateHandler)
 	}
+
+	// 添加自定义处理器 - 获取活跃用户列表
+	activeUsersHandler := crud.NewHandler("/active", http.MethodGet).
+		PreProcess(func(ctx *crud.ProcessContext) error {
+			return nil
+		}).
+		BuildQuery(func(ctx *crud.ProcessContext) error {
+			ctx.Chain = db.Chain().Table("users").
+				Eq("status", "active").
+				OrderBy("username") // 按用户名升序排序
+			return nil
+		}).
+		ExecuteStep(func(ctx *crud.ProcessContext) error {
+			result := ctx.Chain.List()
+			if err := result.Error(); err != nil {
+				return fmt.Errorf("failed to query users: %v", err)
+			}
+			ctx.Data["result"] = result.Data
+			return nil
+		}).
+		PostProcess(func(ctx *crud.ProcessContext) error {
+			crud.CodeMsgFunc(ctx.GinContext, crud.CodeSuccess, "success", ctx.Data["result"])
+			return nil
+		})
+
+	userCrud.AddHandler("active_users", activeUsersHandler.Method, *activeUsersHandler)
 
 	// 登录处理器
 	loginHandler := crud.NewHandler("/login", http.MethodPost).

@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kmlixh/gom/v4"
+	"github.com/kmlixh/gom/v4/define"
 )
 
 // 默认路由常量
@@ -61,6 +62,7 @@ type ItemHandler struct {
 	Handler       gin.HandlerFunc                              // 处理函数
 	Conds         []QueryCondFunc                              // 查询条件函数
 	AllowedFields []string                                     // 允许的字段列表
+	Orders        []*define.OrderBy                            // 排序配置
 	Processors    map[ProcessStep]map[StepPhase]ProcessHandler // 处理器映射
 }
 
@@ -188,6 +190,11 @@ func (h *ItemHandler) processStep(ctx *ProcessContext, step ProcessStep) error {
 		if err := handler(ctx); err != nil {
 			return err
 		}
+	}
+
+	// 如果是构建查询步骤，处理排序
+	if step == BuildQuery && len(h.Orders) > 0 {
+		applyOrderBy(ctx.Chain, h.Orders)
 	}
 
 	// 执行后处理
@@ -864,4 +871,47 @@ func (ac *Crud) Register(r gin.IRouter) {
 			r.Any(h.Path, h.Handler)
 		}
 	}
+}
+
+// validateOrderFields 验证排序字段是否合法
+func (h *ItemHandler) validateOrderFields(orders []*define.OrderBy) error {
+	if len(h.AllowedFields) == 0 {
+		return nil
+	}
+
+	allowedMap := make(map[string]bool)
+	for _, field := range h.AllowedFields {
+		allowedMap[field] = true
+	}
+
+	for _, order := range orders {
+		if !allowedMap[order.Field] {
+			return fmt.Errorf("invalid order field: %s", order.Field)
+		}
+	}
+
+	return nil
+}
+
+// applyOrderBy 应用排序
+func applyOrderBy(chain *gom.Chain, orders []*define.OrderBy) *gom.Chain {
+	if len(orders) == 0 {
+		return chain
+	}
+
+	for _, order := range orders {
+		if order.Type == define.OrderDesc {
+			chain = chain.OrderByDesc(order.Field)
+		} else {
+			chain = chain.OrderBy(order.Field)
+		}
+	}
+
+	return chain
+}
+
+// SetOrders 设置排序
+func (h *ItemHandler) SetOrders(orders ...*define.OrderBy) *ItemHandler {
+	h.Orders = orders
+	return h
 }
