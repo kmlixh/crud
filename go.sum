@@ -48,10 +48,8 @@ github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHm
 github.com/klauspost/cpuid/v2 v2.0.9/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
 github.com/klauspost/cpuid/v2 v2.2.9 h1:66ze0taIn2H33fBvCkXuv9BmCwDfafmiIVpKV9kKGuY=
 github.com/klauspost/cpuid/v2 v2.2.9/go.mod h1:rqkxqrZ1EhYM9G+hXH7YdowN5R5RGN6NK4QwQ3WMXF8=
-github.com/kmlixh/gom/v4 v4.0.7-ai h1:qVHj3s7dEok58u7KpEsmKPaoTb7zVltGotbh0PlRHkk=
-github.com/kmlixh/gom/v4 v4.0.7-ai/go.mod h1:/KGyCMnQv4o7w5ivhxQ8LicoW894THiEkcYTz5Ww44E=
-github.com/kmlixh/gom/v4 v4.0.8-ai h1:bKHhr/velnDULDGUseNyeIwFA7pkTfjyzO2Hu6qTYEU=
-github.com/kmlixh/gom/v4 v4.0.8-ai/go.mod h1:/KGyCMnQv4o7w5ivhxQ8LicoW894THiEkcYTz5Ww44E=
+github.com/kmlixh/gom/v4 v4.1.0-ai h1:ghwWGvVrCiX32xj0eMRJa3fDCwaG02OPXRO8CvTmJp8=
+github.com/kmlixh/gom/v4 v4.1.0-ai/go.mod h1:/KGyCMnQv4o7w5ivhxQ8LicoW894THiEkcYTz5Ww44E=
 github.com/knz/go-libedit v1.10.1/go.mod h1:MZTVkCWyz0oBc7JOWP3wNAzd002ZbM/5hgShxwh4x8M=
 github.com/leodido/go-urn v1.4.0 h1:WT9HwE9SGECu3lg4d/dIA+jxlljEa1/ffXKmRjqdmIQ=
 github.com/leodido/go-urn v1.4.0/go.mod h1:bvxc+MVxLKB4z00jd1z+Dvzr47oO32F/QSNjSBOlFxI=
