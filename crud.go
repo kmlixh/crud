@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"text/template"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kmlixh/gom/v4"
@@ -257,34 +258,29 @@ func (dp *DefaultProcessors) List() *ItemHandler {
 		Method: http.MethodGet,
 	}
 
-	// 预处理
-	h.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
-		page, size := parsePagination(ctx.GinContext)
-		ctx.Data["page"] = page
-		ctx.Data["size"] = size
-		return nil
-	})
-
 	// 构建对象
 	h.AddProcessor(BuildQuery, BeforePhase, func(ctx *ProcessContext) error {
-		// 处理查询条件
-		if err := parseQueryConditions(ctx.GinContext, ctx.Chain); err != nil {
-			return err
+		if v, exists := ctx.GinContext.Get("chain"); exists {
+			ctx.Chain = v.(*gom.Chain)
+		} else {
+			ctx.Chain = dp.crud.db.Chain().Table(dp.crud.tableName)
 		}
 		return nil
 	})
 
+	// 构建SQL
 	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
+		// 处理查询条件
+		if err := parseQueryConditions(ctx.GinContext, ctx.Chain); err != nil {
+			return err
+		}
+
 		// 处理字段选择
 		if len(h.AllowedFields) > 0 {
 			ctx.Chain = ctx.Chain.Fields(h.AllowedFields...)
 		}
 
-		// 处理排序和分页
-		page := ctx.Data["page"].(int)
-		size := ctx.Data["size"].(int)
-		ctx.Chain = ctx.Chain.Offset((page - 1) * size).Limit(size)
-
+		// 处理排序
 		if sort := ctx.GinContext.Query("sort"); sort != "" {
 			if sort[0] == '-' {
 				ctx.Chain = ctx.Chain.OrderByDesc(sort[1:])
@@ -297,13 +293,6 @@ func (dp *DefaultProcessors) List() *ItemHandler {
 
 	// 执行SQL
 	h.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		// 获取总数
-		total, err := ctx.Chain.Count()
-		if err != nil {
-			return err
-		}
-		ctx.Data["total"] = total
-
 		// 执行查询
 		ctx.Result = ctx.Chain.List()
 		return ctx.Result.Error()
@@ -311,16 +300,8 @@ func (dp *DefaultProcessors) List() *ItemHandler {
 
 	// 处理响应
 	h.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
-		page := ctx.Data["page"].(int)
-		size := ctx.Data["size"].(int)
-		total := ctx.Data["total"].(int64)
-
 		JsonOk(ctx.GinContext, gin.H{
-			"total":    total,
-			"page":     page,
-			"size":     size,
-			"data":     ctx.Result.Data,
-			"lastPage": (page * size) >= int(total),
+			"data": ctx.Result.Data,
 		})
 		return nil
 	})
@@ -542,6 +523,91 @@ func (dp *DefaultProcessors) Delete() *ItemHandler {
 	return h
 }
 
+// Page 处理器
+func (dp *DefaultProcessors) Page() *ItemHandler {
+	h := &ItemHandler{
+		Path:   "/page",
+		Method: http.MethodGet,
+	}
+
+	// 预处理
+	h.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+		page, size := parsePagination(ctx.GinContext)
+		ctx.Data["page"] = page
+		ctx.Data["size"] = size
+		return nil
+	})
+
+	// 构建对象
+	h.AddProcessor(BuildQuery, BeforePhase, func(ctx *ProcessContext) error {
+		if v, exists := ctx.GinContext.Get("chain"); exists {
+			ctx.Chain = v.(*gom.Chain)
+		} else {
+			ctx.Chain = dp.crud.db.Chain().Table(dp.crud.tableName)
+		}
+		return nil
+	})
+
+	// 构建SQL
+	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
+		// 处理查询条件
+		if err := parseQueryConditions(ctx.GinContext, ctx.Chain); err != nil {
+			return err
+		}
+
+		// 处理字段选择
+		if len(h.AllowedFields) > 0 {
+			ctx.Chain = ctx.Chain.Fields(h.AllowedFields...)
+		}
+
+		// 处理排序和分页
+		page := ctx.Data["page"].(int)
+		size := ctx.Data["size"].(int)
+		ctx.Chain = ctx.Chain.Offset((page - 1) * size).Limit(size)
+
+		if sort := ctx.GinContext.Query("sort"); sort != "" {
+			if sort[0] == '-' {
+				ctx.Chain = ctx.Chain.OrderByDesc(sort[1:])
+			} else {
+				ctx.Chain = ctx.Chain.OrderBy(sort)
+			}
+		}
+		return nil
+	})
+
+	// 执行SQL
+	h.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
+		// 获取总数
+		total, err := ctx.Chain.Count()
+		if err != nil {
+			return err
+		}
+		ctx.Data["total"] = total
+
+		// 执行查询
+		ctx.Result = ctx.Chain.List()
+		return ctx.Result.Error()
+	})
+
+	// 处理响应
+	h.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		page := ctx.Data["page"].(int)
+		size := ctx.Data["size"].(int)
+		total := ctx.Data["total"].(int64)
+
+		JsonOk(ctx.GinContext, gin.H{
+			"total":    total,
+			"page":     page,
+			"size":     size,
+			"data":     ctx.Result.Data,
+			"lastPage": (page * size) >= int(total),
+		})
+		return nil
+	})
+
+	return h
+}
+
 // New2 创建新的CRUD处理器（自动获取表名）
 func New2(db *gom.DB, entity interface{}) *Crud {
 	crud := &Crud{
@@ -573,45 +639,25 @@ func New(db *gom.DB, entity interface{}, tableName string) *Crud {
 
 // initDefaultHandlers 初始化默认处理器
 func (c *Crud) initDefaultHandlers() {
+	processors := NewDefaultProcessors(c)
+
 	// 列表处理器
-	listHandler := &ItemHandler{
-		Path:   "",
-		Method: http.MethodGet,
-	}
-	listHandler.Handler = listHandler.HandleRequest
-	c.handlers[LIST] = listHandler
+	c.handlers[LIST] = processors.List()
+
+	// 分页处理器
+	c.handlers[PAGE] = processors.Page()
 
 	// 详情处理器
-	detailHandler := &ItemHandler{
-		Path:   "/:id",
-		Method: http.MethodGet,
-	}
-	detailHandler.Handler = detailHandler.HandleRequest
-	c.handlers[SINGLE] = detailHandler
+	c.handlers[SINGLE] = processors.Get()
 
 	// 创建处理器
-	createHandler := &ItemHandler{
-		Path:   "",
-		Method: http.MethodPost,
-	}
-	createHandler.Handler = createHandler.HandleRequest
-	c.handlers[SAVE] = createHandler
+	c.handlers[SAVE] = processors.Create()
 
 	// 更新处理器
-	updateHandler := &ItemHandler{
-		Path:   "/:id",
-		Method: http.MethodPut,
-	}
-	updateHandler.Handler = updateHandler.HandleRequest
-	c.handlers[UPDATE] = updateHandler
+	c.handlers[UPDATE] = processors.Update()
 
 	// 删除处理器
-	deleteHandler := &ItemHandler{
-		Path:   "/:id",
-		Method: http.MethodDelete,
-	}
-	deleteHandler.Handler = deleteHandler.HandleRequest
-	c.handlers[DELETE] = deleteHandler
+	c.handlers[DELETE] = processors.Delete()
 }
 
 // GetHandler 获取指定名称的处理器
@@ -670,7 +716,14 @@ func (c *Crud) filterFields(h *ItemHandler, data interface{}) map[string]interfa
 
 // List 列表查询
 func (ac *Crud) List(c *gin.Context) {
-	page, size := parsePagination(c)
+	// 如果请求包含分页参数，重定向到分页处理器
+	if c.Query("page") != "" || c.Query("size") != "" {
+		if handler, ok := ac.handlers[PAGE]; ok {
+			handler.Handler(c)
+			return
+		}
+	}
+
 	var chain *gom.Chain
 	if v, exists := c.Get("chain"); exists {
 		chain = v.(*gom.Chain)
@@ -686,24 +739,13 @@ func (ac *Crud) List(c *gin.Context) {
 
 	// 获取当前处理器
 	h := ac.handlers[LIST]
-	if c.Query("page") != "" {
-		h = ac.handlers[PAGE]
-	}
 
 	// 处理字段选择
 	if len(h.AllowedFields) > 0 {
 		chain = chain.Fields(h.AllowedFields...)
 	}
 
-	// 获取总数
-	total, err := chain.Count()
-	if err != nil {
-		JsonErr(c, CodeError, err.Error())
-		return
-	}
-
-	// 处理排序和分页
-	chain = chain.Offset((page - 1) * size).Limit(size)
+	// 处理排序
 	if sort := c.Query("sort"); sort != "" {
 		if sort[0] == '-' {
 			chain = chain.OrderByDesc(sort[1:])
@@ -720,11 +762,7 @@ func (ac *Crud) List(c *gin.Context) {
 	}
 
 	JsonOk(c, gin.H{
-		"total":    total,
-		"page":     page,
-		"size":     size,
-		"data":     result.Data,
-		"lastPage": (page * size) >= int(total),
+		"data": result.Data,
 	})
 }
 
@@ -1056,3 +1094,152 @@ func (h *ItemHandler) SetDescription(desc string) *ItemHandler {
 
 // 存储所有的 Crud 实例
 var cruds []*Crud
+
+// apiDocTemplate HTML文档模板
+const apiDocTemplate = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>API Documentation</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .model {
+            background: #f8f9fa;
+            border-radius: 5px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        .model-name {
+            font-size: 24px;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .model-description {
+            color: #666;
+            margin-bottom: 20px;
+        }
+        .handler {
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .method {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .get { background: #61affe; color: white; }
+        .post { background: #49cc90; color: white; }
+        .put { background: #fca130; color: white; }
+        .delete { background: #f93e3e; color: white; }
+        .path {
+            font-family: monospace;
+            font-size: 14px;
+            color: #3b4151;
+        }
+        .fields {
+            margin-top: 10px;
+            color: #666;
+        }
+        .fields span {
+            display: inline-block;
+            background: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin: 2px;
+            font-size: 12px;
+        }
+        .description {
+            margin-top: 10px;
+            font-style: italic;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <h1>API Documentation</h1>
+    {{range .}}
+    <div class="model">
+        <div class="model-name">{{.Name}}</div>
+        <div class="model-description">{{.Description}}</div>
+        {{range .Handlers}}
+        <div class="handler">
+            <div>
+                <span class="method {{toLowerCase .Method}}">{{.Method}}</span>
+                <span class="path">{{.Path}}</span>
+            </div>
+            {{if .Description}}
+            <div class="description">{{.Description}}</div>
+            {{end}}
+            {{if .Fields}}
+            <div class="fields">
+                Fields: {{range .Fields}}<span>{{.}}</span>{{end}}
+            </div>
+            {{end}}
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+</body>
+</html>
+`
+
+// RegisterApiDoc 注册API文档路由
+func RegisterApiDoc(router gin.IRouter, path string) {
+	router.GET(path, func(c *gin.Context) {
+		// 将 map 转换为 slice，以便添加模型描述
+		models := make([]ModelInfo, 0)
+		for modelName, handlers := range registeredHandlers {
+			// 查找对应的 Crud 实例以获取描述
+			var description string
+			for _, crud := range cruds {
+				if reflect.TypeOf(crud.entity).Elem().Name() == modelName {
+					description = crud.description
+					break
+				}
+			}
+			models = append(models, ModelInfo{
+				Name:        modelName,
+				Description: description,
+				Handlers:    handlers,
+			})
+		}
+
+		// 创建模板
+		tmpl := template.New("api-doc")
+
+		// 添加自定义函数
+		tmpl = tmpl.Funcs(template.FuncMap{
+			"toLowerCase": strings.ToLower,
+		})
+
+		// 解析模板
+		tmpl, err := tmpl.Parse(apiDocTemplate)
+		if err != nil {
+			JsonErr(c, CodeError, "Failed to parse template: "+err.Error())
+			return
+		}
+
+		// 设置响应头
+		c.Header("Content-Type", "text/html; charset=utf-8")
+
+		// 执行模板
+		if err := tmpl.Execute(c.Writer, models); err != nil {
+			JsonErr(c, CodeError, "Failed to execute template: "+err.Error())
+			return
+		}
+	})
+}

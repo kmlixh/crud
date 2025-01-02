@@ -29,7 +29,7 @@ func TestApiInfo(t *testing.T) {
 	r := gin.New()
 
 	// 初始化数据库连接
-	db, err := gom.Open("mysql", "root:password@tcp(localhost:3306)/test?charset=utf8mb4&parseTime=True&loc=Local", false)
+	db, err := gom.Open("mysql", "root:password@tcp(192.168.110.249:3306)/test?charset=utf8mb4&parseTime=True&loc=Local", false)
 	if err != nil {
 		t.Fatal(err)
 	}
