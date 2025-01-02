@@ -529,6 +529,7 @@ func (dp *DefaultProcessors) Page() *ItemHandler {
 		Path:   "/page",
 		Method: http.MethodGet,
 	}
+	h.Handler = h.HandleRequest
 
 	// 预处理
 	h.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
@@ -543,6 +544,9 @@ func (dp *DefaultProcessors) Page() *ItemHandler {
 		if v, exists := ctx.GinContext.Get("chain"); exists {
 			ctx.Chain = v.(*gom.Chain)
 		} else {
+			if dp.crud.tableName == "" {
+				return fmt.Errorf("table name is not set")
+			}
 			ctx.Chain = dp.crud.db.Chain().Table(dp.crud.tableName)
 		}
 		return nil
@@ -610,10 +614,21 @@ func (dp *DefaultProcessors) Page() *ItemHandler {
 
 // New2 创建新的CRUD处理器（自动获取表名）
 func New2(db *gom.DB, entity interface{}) *Crud {
+	tableName, err := db.GetTableName(entity)
+	if err != nil {
+		// 如果获取表名失败，使用结构体名称的小写形式作为表名
+		t := reflect.TypeOf(entity)
+		if t.Kind() == reflect.Ptr {
+			t = t.Elem()
+		}
+		tableName = strings.ToLower(t.Name())
+	}
+
 	crud := &Crud{
-		db:       db,
-		entity:   entity,
-		handlers: make(map[string]*ItemHandler),
+		db:        db,
+		entity:    entity,
+		tableName: tableName,
+		handlers:  make(map[string]*ItemHandler),
 	}
 
 	// 初始化默认处理器
