@@ -33,7 +33,7 @@ func JsonOk(c *gin.Context, data interface{}) {
 		return
 	}
 	c.JSON(http.StatusOK, CodeMsg{
-		Code:    CodeSuccess,
+		Code:    0,
 		Message: MsgSuccess,
 		Data:    data,
 	})

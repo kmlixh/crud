@@ -2,11 +2,11 @@ package crud
 
 import (
 	"fmt"
-	"math"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kmlixh/gom/v4"
@@ -74,11 +74,15 @@ type DefaultProcessors struct {
 
 // Crud 结构体
 type Crud struct {
-	db          *gom.DB
-	tableName   string
-	model       interface{}
-	handlers    map[string]*ItemHandler
-	Description string
+	db             *gom.DB
+	tableName      string
+	model          interface{}
+	handlers       map[string]*ItemHandler
+	Description    string
+	hasCreatedAt   bool
+	hasUpdatedAt   bool
+	createdAtField reflect.StructField
+	updatedAtField reflect.StructField
 }
 
 // New2 创建新的 CRUD 实例
@@ -109,21 +113,149 @@ func New2(db *gom.DB, model interface{}) *Crud {
 	}
 	debugf("Table name: %s", crud.tableName)
 
+	// 检查并记录时间字段信息
+	modelType := reflect.TypeOf(model)
+	if modelType.Kind() == reflect.Ptr {
+		modelType = modelType.Elem()
+	}
+
+	for i := 0; i < modelType.NumField(); i++ {
+		field := modelType.Field(i)
+		if field.Type == reflect.TypeOf(time.Time{}) {
+			gomTag := field.Tag.Get("gom")
+			if gomTag != "" {
+				parts := strings.Split(gomTag, ",")
+				if len(parts) > 0 {
+					dbColumn := parts[0]
+					if dbColumn == "created_at" {
+						crud.hasCreatedAt = true
+						crud.createdAtField = field
+					} else if dbColumn == "updated_at" {
+						crud.hasUpdatedAt = true
+						crud.updatedAtField = field
+					}
+				}
+			}
+		}
+	}
+
 	// 初始化默认处理器
 	crud.initDefaultHandlers()
 
 	return crud
 }
 
+// deserializeJSON attempts to deserialize JSON data into a new instance of the target struct
+func (c *Crud) deserializeJSON(ctx *gin.Context) (interface{}, error) {
+	// Create a new instance of the model type
+	modelType := reflect.TypeOf(c.model)
+	if modelType.Kind() == reflect.Ptr {
+		modelType = modelType.Elem()
+	}
+	newInstance := reflect.New(modelType).Interface()
+
+	// Use gin's ShouldBind to handle the deserialization
+	if err := ctx.ShouldBind(newInstance); err != nil {
+		return nil, fmt.Errorf("failed to bind JSON data: %v", err)
+	}
+
+	return newInstance, nil
+}
+
 // initDefaultHandlers 初始化默认处理器
 func (c *Crud) initDefaultHandlers() {
 	// 列表处理器
+	c.AddHandler(LIST, http.MethodGet, c.initListHandler())
+
+	// 分页处理器
+	c.AddHandler(PAGE, http.MethodGet, c.initPageHandler())
+
+	// 单条处理器
+	c.AddHandler(SINGLE, http.MethodGet, c.initSingleHandler())
+
+	// 保存处理器
+	c.AddHandler(SAVE, http.MethodPost, c.initSaveHandler())
+
+	// 更新处理器
+	c.AddHandler(UPDATE, http.MethodPut, c.initUpdateHandler())
+
+	// 删除处理器
+	c.AddHandler(DELETE, http.MethodDelete, c.initDeleteHandler())
+}
+
+// initSaveHandler 初始化保存处理器
+func (c *Crud) initSaveHandler() *ItemHandler {
+	saveHandler := NewHandler("/save", http.MethodPost)
+	saveHandler.SetDescription("创建新记录")
+	saveHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+		instance := reflect.New(reflect.TypeOf(c.model).Elem()).Interface()
+		if err := ctx.GinContext.ShouldBind(instance); err != nil {
+			JsonErr(ctx.GinContext, CodeInvalid, err.Error())
+			return err
+		}
+		ctx.Data = map[string]interface{}{
+			"instance": instance,
+		}
+		return nil
+	})
+	saveHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
+		instance := ctx.Data["instance"]
+		result := c.db.Chain().Table(c.tableName).Values(instance).Save()
+		if result.Error != nil {
+			JsonErr(ctx.GinContext, CodeError, fmt.Sprintf("failed to save record: %v", result.Error))
+			return result.Error
+		}
+		ctx.Data["result"] = instance
+		return nil
+	})
+	saveHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		JsonOk(ctx.GinContext, ctx.Data["result"])
+		return nil
+	})
+	return saveHandler
+}
+
+// initUpdateHandler 初始化更新处理器
+func (c *Crud) initUpdateHandler() *ItemHandler {
+	updateHandler := NewHandler("/update", http.MethodPut)
+	updateHandler.SetDescription("更新记录")
+	updateHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+		instance := reflect.New(reflect.TypeOf(c.model).Elem()).Interface()
+		if err := ctx.GinContext.ShouldBind(instance); err != nil {
+			JsonErr(ctx.GinContext, CodeInvalid, err.Error())
+			return err
+		}
+		ctx.Data = map[string]interface{}{
+			"instance": instance,
+		}
+		return nil
+	})
+	updateHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
+		instance := ctx.Data["instance"]
+		result := c.db.Chain().From(instance).Update()
+		if result.Error != nil {
+			JsonErr(ctx.GinContext, CodeError, fmt.Sprintf("failed to update record: %v", result.Error))
+			return result.Error
+		}
+		ctx.Data["result"] = instance
+		return nil
+	})
+	updateHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		JsonOk(ctx.GinContext, ctx.Data["result"])
+		return nil
+	})
+	return updateHandler
+}
+
+// initListHandler 初始化列表处理器
+func (c *Crud) initListHandler() *ItemHandler {
 	listHandler := NewHandler("/list", http.MethodGet)
+	listHandler.SetDescription("获取所有记录")
 	listHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
 		if ctx.Chain == nil {
-			ctx.Chain = c.db.Chain()
+			instance := reflect.New(reflect.TypeOf(c.model).Elem()).Interface()
+			ctx.Chain = c.db.Chain().From(instance)
 		}
-		ctx.Chain = ctx.Chain.Table(c.tableName)
 		return nil
 	})
 	listHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
@@ -138,40 +270,48 @@ func (c *Crud) initDefaultHandlers() {
 		return nil
 	})
 	listHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
-		if result, ok := ctx.Data["result"].([]map[string]interface{}); ok {
-			ctx.Data["result"] = result
-		}
 		JsonOk(ctx.GinContext, ctx.Data["result"])
 		return nil
 	})
-	c.AddHandler(LIST, http.MethodGet, listHandler)
+	return listHandler
+}
 
-	// 分页处理器
-	pageHandler := NewHandler("/page", http.MethodGet)
-	pageHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+// initPageHandler 初始化分页处理器
+func (c *Crud) initPageHandler() *ItemHandler {
+	h := NewHandler("/page", http.MethodGet)
+	h.SetDescription("分页查询记录")
+
+	// 初始化上下文
+	h.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+		// 设置默认分页参数
 		page := 1
 		size := 10
+
+		// 从请求中获取分页参数
 		if p := ctx.GinContext.Query("page"); p != "" {
-			if v, err := strconv.Atoi(p); err == nil && v > 0 {
-				page = v
+			if pInt, err := strconv.Atoi(p); err == nil && pInt > 0 {
+				page = pInt
 			}
 		}
 		if s := ctx.GinContext.Query("size"); s != "" {
-			if v, err := strconv.Atoi(s); err == nil && v > 0 {
-				size = v
+			if sInt, err := strconv.Atoi(s); err == nil && sInt > 0 {
+				size = sInt
 			}
 		}
+
 		ctx.Data = map[string]interface{}{
 			"page": page,
 			"size": size,
+			"crud": c,
 		}
 		return nil
 	})
-	pageHandler.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
-		if ctx.Chain == nil {
-			ctx.Chain = c.db.Chain()
-		}
-		ctx.Chain = ctx.Chain.Table(c.tableName)
+
+	// 构建查询
+	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
+		// 初始化查询链
+		crud := ctx.Data["crud"].(*Crud)
+		ctx.Chain = crud.db.Chain().Table(crud.tableName)
 
 		// 处理查询条件
 		if err := ParseQueryConditions(ctx.GinContext, ctx.Chain); err != nil {
@@ -180,10 +320,13 @@ func (c *Crud) initDefaultHandlers() {
 
 		// 处理排序
 		if sort := ctx.GinContext.Query("sort"); sort != "" {
-			if sort[0] == '-' {
-				ctx.Chain = ctx.Chain.OrderByDesc(sort[1:])
+			if strings.HasPrefix(sort, "-") {
+				field := strings.TrimPrefix(sort, "-")
+				ctx.Chain = ctx.Chain.OrderByDesc(field)
+				debugf("Applied descending sort on field: %s", field)
 			} else {
 				ctx.Chain = ctx.Chain.OrderBy(sort)
+				debugf("Applied ascending sort on field: %s", sort)
 			}
 		}
 
@@ -192,64 +335,68 @@ func (c *Crud) initDefaultHandlers() {
 		size := ctx.Data["size"].(int)
 		offset := (page - 1) * size
 		ctx.Chain = ctx.Chain.Offset(offset).Limit(size)
+		debugf("Applied pagination: offset=%d, limit=%d", offset, size)
+
 		return nil
 	})
-	pageHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		debugf("Executing SQL query")
-		// 获取分页参数
-		page := ctx.Data["page"].(int)
-		size := ctx.Data["size"].(int)
 
-		// 获取总数
-		countChain := c.db.Chain().Table(c.tableName)
-		if err := ParseQueryConditions(ctx.GinContext, countChain); err != nil {
-			debugf("Error parsing query conditions for count: %v", err)
-			return err
-		}
-
-		// 执行 COUNT 查询
-		total, err := countChain.Count()
-		if err != nil {
-			debugf("Error getting total count: %v", err)
-			return err
-		}
-		debugf("Total count: %d", total)
-
-		// 获取分页数据
+	// 执行查询
+	h.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
+		// 执行查询
 		result := ctx.Chain.List()
 		if result.Error != nil {
-			debugf("Error getting page data: %v", result.Error)
+			JsonErr(ctx.GinContext, CodeError, fmt.Sprintf("failed to execute query: %v", result.Error))
 			return result.Error
 		}
 
-		// 构建分页响应
+		// 获取总记录数
+		crud := ctx.Data["crud"].(*Crud)
+		countChain := crud.db.Chain().Table(crud.tableName)
+		// 复制查询条件
+		if err := ParseQueryConditions(ctx.GinContext, countChain); err != nil {
+			JsonErr(ctx.GinContext, CodeError, fmt.Sprintf("failed to parse query conditions: %v", err))
+			return err
+		}
+		total, err := countChain.Count()
+		if err != nil {
+			JsonErr(ctx.GinContext, CodeError, "failed to get total count")
+			return fmt.Errorf("failed to get total count: %v", err)
+		}
+
+		// 确保 result.Data 不为空
+		if result.Data == nil {
+			result.Data = []map[string]interface{}{}
+		}
+
 		ctx.Data["result"] = map[string]interface{}{
-			"page":  page,
-			"size":  size,
-			"total": total,
-			"pages": int(math.Ceil(float64(total) / float64(size))),
 			"list":  result.Data,
+			"total": total,
+			"page":  ctx.Data["page"].(int),
+			"size":  ctx.Data["size"].(int),
 		}
-		debugf("Page result: %+v", ctx.Data["result"])
-
 		return nil
 	})
-	pageHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+
+	// 响应处理
+	h.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
 		if result, ok := ctx.Data["result"].(map[string]interface{}); ok {
-			if list, ok := result["list"].([]map[string]interface{}); ok {
-				result["list"] = list
-			}
+			JsonOk(ctx.GinContext, result)
+			return nil
 		}
-		JsonOk(ctx.GinContext, ctx.Data["result"])
-		return nil
+		return fmt.Errorf("invalid result format")
 	})
-	c.AddHandler(PAGE, http.MethodGet, pageHandler)
 
-	// 单条处理器
+	return h
+}
+
+// initSingleHandler 初始化单条处理器
+func (c *Crud) initSingleHandler() *ItemHandler {
 	singleHandler := NewHandler("/detail/:id", http.MethodGet)
+	singleHandler.SetDescription("获取单条记录详情")
 	singleHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
 		id := ctx.GinContext.Param("id")
 		if id == "" {
+			JsonErr(ctx.GinContext, CodeInvalid, "id is required")
 			return fmt.Errorf("id is required")
 		}
 		ctx.Data = map[string]interface{}{
@@ -259,9 +406,10 @@ func (c *Crud) initDefaultHandlers() {
 	})
 	singleHandler.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
 		if ctx.Chain == nil {
-			ctx.Chain = c.db.Chain()
+			ctx.Chain = c.db.Chain().Table(c.tableName)
 		}
-		ctx.Chain = ctx.Chain.Table(c.tableName).Eq("id", ctx.Data["id"])
+		id := ctx.Data["id"].(string)
+		ctx.Chain = ctx.Chain.Eq("id", id)
 		return nil
 	})
 	singleHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
@@ -272,6 +420,7 @@ func (c *Crud) initDefaultHandlers() {
 				ctx.GinContext.Abort()
 				return nil
 			}
+			JsonErr(ctx.GinContext, CodeError, fmt.Sprintf("failed to retrieve record: %v", result.Error))
 			return result.Error
 		}
 		if len(result.Data) == 0 {
@@ -279,102 +428,28 @@ func (c *Crud) initDefaultHandlers() {
 			ctx.GinContext.Abort()
 			return nil
 		}
+
 		ctx.Data["result"] = result.Data[0]
 		return nil
 	})
 	singleHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
 		if result, ok := ctx.Data["result"].(map[string]interface{}); ok {
-			ctx.Data["result"] = result
+			JsonOk(ctx.GinContext, result)
+			return nil
 		}
-		JsonOk(ctx.GinContext, ctx.Data["result"])
-		return nil
+		return fmt.Errorf("invalid result format")
 	})
-	c.AddHandler(SINGLE, http.MethodGet, singleHandler)
+	return singleHandler
+}
 
-	// 保存处理器
-	saveHandler := NewHandler("/save", http.MethodPost)
-	saveHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
-		var data map[string]interface{}
-		if err := ctx.GinContext.ShouldBindJSON(&data); err != nil {
-			return err
-		}
-		ctx.Data = map[string]interface{}{
-			"values": data,
-		}
-		return nil
-	})
-	saveHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		values, ok := ctx.Data["values"].(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("invalid values")
-		}
-		result := c.db.Chain().Table(c.tableName).Values(values).Save()
-		if result.Error != nil {
-			return result.Error
-		}
-		id, err := result.LastInsertId()
-		if err != nil {
-			return err
-		}
-		// 查询新创建的记录
-		queryResult := c.db.Chain().Table(c.tableName).Eq("id", id).First()
-		if queryResult.Error != nil {
-			return queryResult.Error
-		}
-		ctx.Data["result"] = queryResult.Data[0]
-		return nil
-	})
-	saveHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
-		JsonOk(ctx.GinContext, ctx.Data["result"])
-		return nil
-	})
-	c.AddHandler(SAVE, http.MethodPost, saveHandler)
-
-	// 更新处理器
-	updateHandler := NewHandler("/update/:id", http.MethodPut)
-	updateHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
-		id := ctx.GinContext.Param("id")
-		if id == "" {
-			return fmt.Errorf("id is required")
-		}
-		var data map[string]interface{}
-		if err := ctx.GinContext.ShouldBindJSON(&data); err != nil {
-			return err
-		}
-		ctx.Data = map[string]interface{}{
-			"id":     id,
-			"values": data,
-		}
-		return nil
-	})
-	updateHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		values, ok := ctx.Data["values"].(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("invalid values")
-		}
-		result := c.db.Chain().Table(c.tableName).Eq("id", ctx.Data["id"]).Update(values)
-		if result.Error != nil {
-			return result.Error
-		}
-		// 查询更新后的记录
-		queryResult := c.db.Chain().Table(c.tableName).Eq("id", ctx.Data["id"]).First()
-		if queryResult.Error != nil {
-			return queryResult.Error
-		}
-		ctx.Data["result"] = queryResult.Data[0]
-		return nil
-	})
-	updateHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
-		JsonOk(ctx.GinContext, ctx.Data["result"])
-		return nil
-	})
-	c.AddHandler(UPDATE, http.MethodPut, updateHandler)
-
-	// 删除处理器
+// initDeleteHandler 初始化删除处理器
+func (c *Crud) initDeleteHandler() *ItemHandler {
 	deleteHandler := NewHandler("/delete/:id", http.MethodDelete)
+	deleteHandler.SetDescription("删除指定记录")
 	deleteHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
 		id := ctx.GinContext.Param("id")
 		if id == "" {
+			JsonErr(ctx.GinContext, CodeInvalid, "id is required")
 			return fmt.Errorf("id is required")
 		}
 		ctx.Data = map[string]interface{}{
@@ -383,34 +458,38 @@ func (c *Crud) initDefaultHandlers() {
 		return nil
 	})
 	deleteHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		// 先查询记录是否存在
-		queryResult := c.db.Chain().Table(c.tableName).Eq("id", ctx.Data["id"]).First()
-		if queryResult.Error != nil {
-			if queryResult.Error.Error() == "sql: no rows in result set" {
-				JsonErr(ctx.GinContext, CodeNotFound, "record not found")
-				return nil
-			}
-			return queryResult.Error
-		}
+		id := ctx.Data["id"]
 
-		result := c.db.Chain().Table(c.tableName).Eq("id", ctx.Data["id"]).Delete()
+		result := c.db.Chain().Table(c.tableName).Eq("id", id).Delete()
 		if result.Error != nil {
+			JsonErr(ctx.GinContext, CodeError, fmt.Sprintf("failed to delete record: %v", result.Error))
 			return result.Error
 		}
+
 		affected, err := result.RowsAffected()
 		if err != nil {
+			JsonErr(ctx.GinContext, CodeError, fmt.Sprintf("failed to get affected rows: %v", err))
 			return err
 		}
+
+		if affected == 0 {
+			JsonErr(ctx.GinContext, CodeNotFound, "record not found")
+			return fmt.Errorf("record not found")
+		}
+
 		ctx.Data["result"] = map[string]interface{}{
-			"affected": affected,
+			"id": id,
 		}
 		return nil
 	})
 	deleteHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
-		JsonOk(ctx.GinContext, ctx.Data["result"])
-		return nil
+		if result, ok := ctx.Data["result"].(map[string]interface{}); ok {
+			JsonOk(ctx.GinContext, result)
+			return nil
+		}
+		return fmt.Errorf("invalid result format")
 	})
-	c.AddHandler(DELETE, http.MethodDelete, deleteHandler)
+	return deleteHandler
 }
 
 // parseQueryConditions 解析查询条件
@@ -442,6 +521,10 @@ func ParseQueryConditions(c *gin.Context, chain *gom.Chain) error {
 			} else if strings.HasSuffix(k, "_like") {
 				field := strings.TrimSuffix(k, "_like")
 				chain = chain.Where(field, define.OpLike, fmt.Sprintf("%%%s%%", v[0]))
+			} else if strings.HasSuffix(k, "_in") {
+				field := strings.TrimSuffix(k, "_in")
+				values := strings.Split(v[0], ",")
+				chain = chain.Where(field, define.OpIn, values)
 			} else {
 				chain = chain.Where(k, define.OpEq, v[0])
 			}
@@ -518,9 +601,10 @@ func (dp *DefaultProcessors) Page() *ItemHandler {
 
 		// 处理排序
 		if sort := ctx.GinContext.Query("sort"); sort != "" {
-			if sort[0] == '-' {
-				ctx.Chain = ctx.Chain.OrderByDesc(sort[1:])
-				debugf("Applied descending sort on field: %s", sort[1:])
+			if strings.HasPrefix(sort, "-") {
+				field := strings.TrimPrefix(sort, "-")
+				ctx.Chain = ctx.Chain.OrderByDesc(field)
+				debugf("Applied descending sort on field: %s", field)
 			} else {
 				ctx.Chain = ctx.Chain.OrderBy(sort)
 				debugf("Applied ascending sort on field: %s", sort)
@@ -534,48 +618,33 @@ func (dp *DefaultProcessors) Page() *ItemHandler {
 		ctx.Chain = ctx.Chain.Offset(offset).Limit(size)
 		debugf("Applied pagination: offset=%d, limit=%d", offset, size)
 
-		return nil
-	})
-
-	// 执行SQL
-	h.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		debugf("Executing SQL query")
-		// 获取分页参数
-		page := ctx.Data["page"].(int)
-		size := ctx.Data["size"].(int)
-
-		// 获取总数
-		countChain := dp.crud.db.Chain().Table(dp.crud.tableName)
-		if err := ParseQueryConditions(ctx.GinContext, countChain); err != nil {
-			debugf("Error parsing query conditions for count: %v", err)
-			return err
-		}
-
-		// 执行 COUNT 查询
-		total, err := countChain.Count()
-		if err != nil {
-			debugf("Error getting total count: %v", err)
-			return err
-		}
-		debugf("Total count: %d", total)
-
-		// 获取分页数据
+		// 执行查询
 		result := ctx.Chain.List()
 		if result.Error != nil {
-			debugf("Error getting page data: %v", result.Error)
+			JsonErr(ctx.GinContext, CodeError, fmt.Sprintf("failed to execute query: %v", result.Error))
 			return result.Error
 		}
 
-		// 构建分页响应
+		// 获取总记录数
+		crud := ctx.Data["crud"].(*Crud)
+		countChain := crud.db.Chain().Table(crud.tableName)
+		// 复制查询条件
+		if err := ParseQueryConditions(ctx.GinContext, countChain); err != nil {
+			JsonErr(ctx.GinContext, CodeError, fmt.Sprintf("failed to parse query conditions: %v", err))
+			return err
+		}
+		total, err := countChain.Count()
+		if err != nil {
+			JsonErr(ctx.GinContext, CodeError, "failed to get total count")
+			return fmt.Errorf("failed to get total count: %v", err)
+		}
+
 		ctx.Data["result"] = map[string]interface{}{
+			"list":  result.Data,
+			"total": total,
 			"page":  page,
 			"size":  size,
-			"total": total,
-			"pages": int(math.Ceil(float64(total) / float64(size))),
-			"list":  result.Data,
 		}
-		debugf("Page result: %+v", ctx.Data["result"])
-
 		return nil
 	})
 
@@ -613,24 +682,44 @@ func (h *ItemHandler) HandleRequest(c *gin.Context) {
 	}
 	c.Set("process_context", ctx)
 
+	// 处理 JSON 绑定错误
+	if c.Request.Method == http.MethodPost || c.Request.Method == http.MethodPut {
+		if c.Request.Header.Get("Content-Type") != "application/json" {
+			JsonErr(c, CodeInvalid, "Content-Type must be application/json")
+			return
+		}
+	}
+
 	for _, phase := range []string{PreProcess, BuildQuery, Execute, PostProcess} {
 		if err := h.executeProcessors(phase, BeforePhase, ctx); err != nil {
 			if _, exists := c.Get("response_sent"); !exists {
-				JsonErr(c, CodeError, err.Error())
+				if err.Error() == "sql: no rows in result set" {
+					JsonErr(c, CodeNotFound, "record not found")
+				} else {
+					JsonErr(c, CodeInvalid, err.Error())
+				}
 				c.Set("response_sent", true)
 			}
 			return
 		}
 		if err := h.executeProcessors(phase, OnPhase, ctx); err != nil {
 			if _, exists := c.Get("response_sent"); !exists {
-				JsonErr(c, CodeError, err.Error())
+				if err.Error() == "sql: no rows in result set" {
+					JsonErr(c, CodeNotFound, "record not found")
+				} else {
+					JsonErr(c, CodeInvalid, err.Error())
+				}
 				c.Set("response_sent", true)
 			}
 			return
 		}
 		if err := h.executeProcessors(phase, AfterPhase, ctx); err != nil {
 			if _, exists := c.Get("response_sent"); !exists {
-				JsonErr(c, CodeError, err.Error())
+				if err.Error() == "sql: no rows in result set" {
+					JsonErr(c, CodeNotFound, "record not found")
+				} else {
+					JsonErr(c, CodeInvalid, err.Error())
+				}
 				c.Set("response_sent", true)
 			}
 			return
@@ -685,9 +774,24 @@ func (c *Crud) SetDescription(desc string) *Crud {
 
 // RegisterRoutes 注册路由
 func (c *Crud) RegisterRoutes(group *gin.RouterGroup, prefix string) {
+	if Debug {
+		debugf("Registering routes for table: %s", c.tableName)
+	}
 	for _, handler := range c.handlers {
 		path := prefix + handler.Path
+		if Debug {
+			debugf("  %s %s", handler.Method, path)
+			if handler.Description != "" {
+				debugf("    Description: %s", handler.Description)
+			}
+			if len(handler.AllowedFields) > 0 {
+				debugf("    Allowed Fields: %v", handler.AllowedFields)
+			}
+		}
 		group.Handle(handler.Method, path, handler.HandleRequest)
+	}
+	if Debug {
+		debugf("Route registration completed")
 	}
 }
 
@@ -747,22 +851,22 @@ func RegisterApiDoc(r *gin.Engine, path string) {
 
 	r.GET(path, func(c *gin.Context) {
 		html := `<!DOCTYPE html>
-		<html>
-		<head>
-			<title>API Documentation</title>
-			<style>
-				body { font-family: Arial, sans-serif; margin: 20px; }
-				.table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-				.table th, .table td { padding: 8px; border: 1px solid #ddd; }
-				.table th { background-color: #f5f5f5; }
-				.method-get { color: #2196F3; }
-				.method-post { color: #4CAF50; }
-				.method-put { color: #FF9800; }
-				.method-delete { color: #F44336; }
-			</style>
-		</head>
-		<body>
-			<h1>API Documentation</h1>`
+			<html>
+			<head>
+				<title>API Documentation</title>
+				<style>
+					body { font-family: Arial, sans-serif; margin: 20px; }
+					.table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+					.table th, .table td { padding: 8px; border: 1px solid #ddd; }
+					.table th { background-color: #f5f5f5; }
+					.method-get { color: #2196F3; }
+					.method-post { color: #4CAF50; }
+					.method-put { color: #FF9800; }
+					.method-delete { color: #F44336; }
+				</style>
+			</head>
+			<body>
+				<h1>API Documentation</h1>`
 
 		for table, doc := range apiDocs {
 			if docMap, ok := doc.(map[string]interface{}); ok {
@@ -772,13 +876,13 @@ func RegisterApiDoc(r *gin.Engine, path string) {
 				}
 
 				html += `<table class="table">
-					<tr>
-						<th>Type</th>
-						<th>Method</th>
-						<th>Path</th>
-						<th>Fields</th>
-						<th>Description</th>
-					</tr>`
+						<tr>
+							<th>Type</th>
+							<th>Method</th>
+							<th>Path</th>
+							<th>Fields</th>
+							<th>Description</th>
+						</tr>`
 
 				if apis, ok := docMap["apis"].(map[string]interface{}); ok {
 					for _, api := range apis {
@@ -792,13 +896,13 @@ func RegisterApiDoc(r *gin.Engine, path string) {
 								}
 							}
 							html += fmt.Sprintf(`
-								<tr>
-									<td>%s</td>
-									<td class="%s">%s</td>
-									<td>%s</td>
-									<td>%s</td>
-									<td>%s</td>
-								</tr>`,
+									<tr>
+										<td>%s</td>
+										<td class="%s">%s</td>
+										<td>%s</td>
+										<td>%s</td>
+										<td>%s</td>
+									</tr>`,
 								apiInfo["type"],
 								methodClass,
 								method,
@@ -841,4 +945,185 @@ func (h *ItemHandler) GetHandlers() []gin.HandlerFunc {
 	handlers := make([]gin.HandlerFunc, 0)
 	handlers = append(handlers, h.HandleRequest)
 	return handlers
+}
+
+// mapDBToJSON 将数据库数据映射到 JSON
+func (c *Crud) mapDBToJSON(dbData map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+	modelType := reflect.TypeOf(c.model)
+	if modelType.Kind() == reflect.Ptr {
+		modelType = modelType.Elem()
+	}
+
+	// 直接映射 ID，保持原始类型
+	if id, ok := dbData["id"]; ok {
+		result["id"] = id
+	}
+
+	// Map other fields based on gom tags
+	for i := 0; i < modelType.NumField(); i++ {
+		field := modelType.Field(i)
+		gomTag := field.Tag.Get("gom")
+		if gomTag == "" {
+			continue
+		}
+		parts := strings.Split(gomTag, ",")
+		if len(parts) == 0 {
+			continue
+		}
+		dbColumn := parts[0]
+
+		// Skip m2m fields
+		isM2M := false
+		for _, part := range parts[1:] {
+			if strings.HasPrefix(part, "m2m:") {
+				isM2M = true
+				break
+			}
+		}
+		if isM2M {
+			continue
+		}
+
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" {
+			continue
+		}
+		jsonField := strings.Split(jsonTag, ",")[0]
+
+		if val, ok := dbData[dbColumn]; ok {
+			// 特殊处理 identifier 字段
+			if dbColumn == "identifier" {
+				result["domainName"] = val
+			} else {
+				result[jsonField] = val
+			}
+		}
+	}
+
+	return result
+}
+
+// Save 处理器
+func (c *Crud) Save(ctx *gin.Context) {
+	// 创建新的实例并绑定数据
+	instance := reflect.New(reflect.TypeOf(c.model).Elem()).Interface()
+	if err := ctx.ShouldBind(instance); err != nil {
+		JsonErr(ctx, CodeInvalid, err.Error())
+		return
+	}
+
+	// 设置时间字段
+	now := time.Now()
+	val := reflect.ValueOf(instance).Elem()
+
+	if c.hasCreatedAt {
+		createdAtField := val.FieldByName(c.createdAtField.Name)
+		if createdAtField.IsValid() && createdAtField.CanSet() {
+			createdAtField.Set(reflect.ValueOf(now))
+		}
+	}
+
+	if c.hasUpdatedAt {
+		updatedAtField := val.FieldByName(c.updatedAtField.Name)
+		if updatedAtField.IsValid() && updatedAtField.CanSet() {
+			updatedAtField.Set(reflect.ValueOf(now))
+		}
+	}
+
+	// 使用 gom 的 From 方法保存数据
+	result := c.db.Chain().From(instance).Save()
+	if result.Error != nil {
+		if strings.Contains(strings.ToLower(result.Error.Error()), "duplicate") {
+			JsonErr(ctx, CodeError, fmt.Sprintf("duplicate record: %v", result.Error))
+			return
+		}
+		JsonErr(ctx, CodeError, fmt.Sprintf("failed to save record: %v", result.Error))
+		return
+	}
+
+	// 获取新创建的记录
+	id, _ := result.LastInsertId()
+	newRecord := c.db.Chain().From(instance).Eq("id", id).First()
+	if newRecord.Error != nil {
+		JsonErr(ctx, CodeError, fmt.Sprintf("failed to retrieve created record: %v", newRecord.Error))
+		return
+	}
+
+	JsonOk(ctx, newRecord.Data[0])
+}
+
+// Update 处理器
+func (c *Crud) Update(ctx *gin.Context) {
+	// 创建新的实例并绑定数据
+	instance := reflect.New(reflect.TypeOf(c.model).Elem()).Interface()
+	if err := ctx.ShouldBind(instance); err != nil {
+		JsonErr(ctx, CodeInvalid, err.Error())
+		return
+	}
+
+	// 获取ID
+	val := reflect.ValueOf(instance).Elem()
+	idField := val.FieldByName("ID")
+	if !idField.IsValid() || idField.IsZero() {
+		JsonErr(ctx, CodeInvalid, "id is required")
+		return
+	}
+	id := idField.Interface()
+
+	// 设置更新时间
+	if c.hasUpdatedAt {
+		updatedAtField := val.FieldByName(c.updatedAtField.Name)
+		if updatedAtField.IsValid() && updatedAtField.CanSet() {
+			updatedAtField.Set(reflect.ValueOf(time.Now()))
+		}
+	}
+
+	// 使用 gom 的 From 方法更新数据
+	chain := c.db.Chain().From(instance)
+
+	// 将实例转换为 map
+	values := make(map[string]interface{})
+	typ := val.Type()
+	for i := 0; i < val.NumField(); i++ {
+		field := typ.Field(i)
+		if gomTag := field.Tag.Get("gom"); gomTag != "" {
+			parts := strings.Split(gomTag, ",")
+			if len(parts) > 0 {
+				dbColumn := parts[0]
+				if dbColumn != "id" { // Skip ID field
+					fieldValue := val.Field(i)
+					if fieldValue.IsValid() && !fieldValue.IsZero() {
+						values[dbColumn] = fieldValue.Interface()
+					}
+				}
+			}
+		}
+	}
+
+	result := chain.Eq("id", id).Update(values)
+	if result.Error != nil {
+		JsonErr(ctx, CodeError, fmt.Sprintf("failed to update record: %v", result.Error))
+		return
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		JsonErr(ctx, CodeError, fmt.Sprintf("failed to get affected rows: %v", err))
+		return
+	}
+
+	if affected == 0 {
+		JsonErr(ctx, CodeNotFound, "record not found")
+		return
+	}
+
+	// 获取更新后的记录
+	updatedRecord := chain.Eq("id", id).First()
+	if updatedRecord.Error != nil {
+		JsonErr(ctx, CodeError, fmt.Sprintf("failed to retrieve updated record: %v", updatedRecord.Error))
+		return
+	}
+
+	JsonOk(ctx, updatedRecord.Data[0])
 }
