@@ -3,8 +3,8 @@ CREATE DATABASE IF NOT EXISTS test;
 USE test;
 
 -- 创建用户表
-DROP TABLE IF EXISTS users;
-CREATE TABLE users (
+DROP TABLE IF EXISTS example_users;
+CREATE TABLE example_users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(50) NOT NULL,
     email VARCHAR(100) NOT NULL,

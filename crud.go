@@ -2,282 +2,180 @@ package crud
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
-	"text/template"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kmlixh/gom/v4"
 	"github.com/kmlixh/gom/v4/define"
 )
 
-// 默认路由常量
+// Debug 标记
+var Debug bool
+
+// 调试输出函数
+func debugf(format string, args ...interface{}) {
+	if Debug {
+		fmt.Printf(format+"\n", args...)
+	}
+}
+
+// 处理器类型常量
 const (
 	LIST   = "list"   // 列表
-	SINGLE = "single" // 详情
+	PAGE   = "page"   // 分页
+	SINGLE = "single" // 单条
 	SAVE   = "save"   // 保存
 	UPDATE = "update" // 更新
 	DELETE = "delete" // 删除
-	PAGE   = "page"   // 分页
 )
 
-// ProcessStep 处理步骤
-type ProcessStep int
-
+// 处理阶段常量
 const (
-	PreProcess  ProcessStep = iota // 预处理：参数验证、权限检查等
-	BuildQuery                     // 构建查询：构建数据库操作语句
-	Execute                        // 执行：执行数据库操作
-	PostProcess                    // 后处理：响应处理
+	PreProcess  = "pre_process"
+	BuildQuery  = "build_query"
+	Execute     = "execute"
+	PostProcess = "post_process"
 )
 
-// StepPhase 步骤阶段
-type StepPhase int
-
+// 处理时机常量
 const (
-	BeforePhase StepPhase = iota // 执行前
-	OnPhase                      // 执行中
-	AfterPhase                   // 执行后
+	BeforePhase = "before"
+	OnPhase     = "on"
+	AfterPhase  = "after"
 )
 
 // ProcessContext 处理上下文
 type ProcessContext struct {
-	GinContext *gin.Context     // Gin上下文
-	Chain      *gom.Chain       // 数据库链
-	Data       map[string]any   // 数据
-	Result     *gom.QueryResult // 查询结果
-	Error      error            // 错误信息
+	GinContext *gin.Context
+	Chain      *gom.Chain
+	Data       map[string]interface{}
 }
 
-// ProcessHandler 处理器函数
-type ProcessHandler func(*ProcessContext) error
-
-// QueryCondFunc 查询条件函数
-type QueryCondFunc func(*gom.Chain) *gom.Chain
-
-// ItemHandler 自定义处理器
+// ItemHandler 处理器
 type ItemHandler struct {
-	Path          string                                       // 路由后缀
-	Method        string                                       // HTTP 方法
-	Handler       gin.HandlerFunc                              // 处理函数
-	Conds         []QueryCondFunc                              // 查询条件函数
-	AllowedFields []string                                     // 允许的字段列表
-	Orders        []*define.OrderBy                            // 排序配置
-	description   string                                       // 处理器描述
-	Processors    map[ProcessStep]map[StepPhase]ProcessHandler // 处理器映射
+	Path          string
+	Method        string
+	AllowedFields []string
+	processors    map[string]map[string][]ProcessorFunc
+	Description   string
 }
 
-// NewHandler 创建新的处理器
-func NewHandler(path string, method string) *ItemHandler {
-	h := &ItemHandler{
-		Path:   path,
-		Method: method,
-	}
-	h.Handler = h.HandleRequest
-	return h
-}
+// ProcessorFunc 处理器函数类型
+type ProcessorFunc func(*ProcessContext) error
 
-// PreProcess 添加预处理器
-func (h *ItemHandler) PreProcess(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(PreProcess, OnPhase, handler)
-	return h
-}
-
-// PreProcessBefore 添加预处理前置处理器
-func (h *ItemHandler) PreProcessBefore(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(PreProcess, BeforePhase, handler)
-	return h
-}
-
-// PreProcessAfter 添加预处理后置处理器
-func (h *ItemHandler) PreProcessAfter(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(PreProcess, AfterPhase, handler)
-	return h
-}
-
-// BuildQuery 添加查询构建器
-func (h *ItemHandler) BuildQuery(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(BuildQuery, OnPhase, handler)
-	return h
-}
-
-// BuildQueryBefore 添加查询构建前置处理器
-func (h *ItemHandler) BuildQueryBefore(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(BuildQuery, BeforePhase, handler)
-	return h
-}
-
-// BuildQueryAfter 添加查询构建后置处理器
-func (h *ItemHandler) BuildQueryAfter(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(BuildQuery, AfterPhase, handler)
-	return h
-}
-
-// ExecuteStep 添加执行器
-func (h *ItemHandler) ExecuteStep(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(Execute, OnPhase, handler)
-	return h
-}
-
-// ExecuteStepBefore 添加执行前置处理器
-func (h *ItemHandler) ExecuteStepBefore(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(Execute, BeforePhase, handler)
-	return h
-}
-
-// ExecuteStepAfter 添加执行后置处理器
-func (h *ItemHandler) ExecuteStepAfter(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(Execute, AfterPhase, handler)
-	return h
-}
-
-// PostProcess 添加后处理器
-func (h *ItemHandler) PostProcess(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(PostProcess, OnPhase, handler)
-	return h
-}
-
-// PostProcessBefore 添加后处理前置处理器
-func (h *ItemHandler) PostProcessBefore(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(PostProcess, BeforePhase, handler)
-	return h
-}
-
-// PostProcessAfter 添加后处理后置处理器
-func (h *ItemHandler) PostProcessAfter(handler ProcessHandler) *ItemHandler {
-	h.AddProcessor(PostProcess, AfterPhase, handler)
-	return h
-}
-
-// HandleRequest 处理请求
-func (h *ItemHandler) HandleRequest(c *gin.Context) {
-	ctx := &ProcessContext{
-		GinContext: c,
-		Data:       make(map[string]any),
-	}
-
-	// 执行所有步骤
-	steps := []ProcessStep{
-		PreProcess,  // 预处理：参数验证、权限检查等
-		BuildQuery,  // 构建查询：构建数据库操作语句
-		Execute,     // 执行：执行数据库操作
-		PostProcess, // 后处理：响应处理
-	}
-
-	for _, step := range steps {
-		if err := h.processStep(ctx, step); err != nil {
-			// 如果是最后一步，让它自己处理错误
-			if step == PostProcess {
-				return
-			}
-			// 否则使用默认错误处理
-			JsonErr(c, CodeError, err.Error())
-			return
-		}
-	}
-}
-
-// processStep 执行单个步骤
-func (h *ItemHandler) processStep(ctx *ProcessContext, step ProcessStep) error {
-	// 执行前处理
-	if handler := h.GetProcessor(step, BeforePhase); handler != nil {
-		if err := handler(ctx); err != nil {
-			return err
-		}
-	}
-
-	// 执行处理
-	if handler := h.GetProcessor(step, OnPhase); handler != nil {
-		if err := handler(ctx); err != nil {
-			return err
-		}
-	}
-
-	// 如果是构建查询步骤，处理排序
-	if step == BuildQuery && len(h.Orders) > 0 {
-		applyOrderBy(ctx.Chain, h.Orders)
-	}
-
-	// 执行后处理
-	if handler := h.GetProcessor(step, AfterPhase); handler != nil {
-		if err := handler(ctx); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// AddProcessor 添加处理器
-func (h *ItemHandler) AddProcessor(step ProcessStep, phase StepPhase, handler ProcessHandler) {
-	if h.Processors == nil {
-		h.Processors = make(map[ProcessStep]map[StepPhase]ProcessHandler)
-	}
-	if h.Processors[step] == nil {
-		h.Processors[step] = make(map[StepPhase]ProcessHandler)
-	}
-	h.Processors[step][phase] = handler
-}
-
-// GetProcessor 获取处理器
-func (h *ItemHandler) GetProcessor(step ProcessStep, phase StepPhase) ProcessHandler {
-	if h.Processors == nil {
-		return nil
-	}
-	if h.Processors[step] == nil {
-		return nil
-	}
-	return h.Processors[step][phase]
-}
-
-// Crud 自动CRUD处理器
-type Crud struct {
-	db          *gom.DB                 // 数据库连接
-	entity      interface{}             // 实体对象
-	tableName   string                  // 表名
-	handlers    map[string]*ItemHandler // 处理器映射
-	description string                  // 实体描述
-}
-
-// DefaultProcessors 默认处理器集合
+// DefaultProcessors 默认处理器
 type DefaultProcessors struct {
 	crud *Crud
 }
 
-// NewDefaultProcessors 创建默认处理器集合
-func NewDefaultProcessors(crud *Crud) *DefaultProcessors {
-	return &DefaultProcessors{crud: crud}
+// Crud 结构体
+type Crud struct {
+	db          *gom.DB
+	tableName   string
+	model       interface{}
+	handlers    map[string]*ItemHandler
+	Description string
 }
 
-// List 处理器
-func (dp *DefaultProcessors) List() *ItemHandler {
-	h := &ItemHandler{
-		Path:   "/list",
-		Method: http.MethodGet,
+// New2 创建新的 CRUD 实例
+func New2(db *gom.DB, model interface{}) *Crud {
+	debugf("Creating new CRUD instance")
+	if db == nil {
+		debugf("Error: database connection is nil")
+		return nil
 	}
 
-	// 构建对象
-	h.AddProcessor(BuildQuery, BeforePhase, func(ctx *ProcessContext) error {
-		if v, exists := ctx.GinContext.Get("chain"); exists {
-			ctx.Chain = v.(*gom.Chain)
-		} else {
-			ctx.Chain = dp.crud.db.Chain().Table(dp.crud.tableName)
+	crud := &Crud{
+		db:       db,
+		model:    model,
+		handlers: make(map[string]*ItemHandler),
+	}
+
+	// 获取表名
+	if m, ok := model.(interface{ GetTableName() string }); ok {
+		crud.tableName = m.GetTableName()
+	} else if m, ok := model.(interface{ TableName() string }); ok {
+		crud.tableName = m.TableName()
+	} else {
+		t := reflect.TypeOf(model)
+		if t.Kind() == reflect.Ptr {
+			t = t.Elem()
+		}
+		crud.tableName = strings.ToLower(t.Name())
+	}
+	debugf("Table name: %s", crud.tableName)
+
+	// 初始化默认处理器
+	crud.initDefaultHandlers()
+
+	return crud
+}
+
+// initDefaultHandlers 初始化默认处理器
+func (c *Crud) initDefaultHandlers() {
+	// 列表处理器
+	listHandler := NewHandler("/list", http.MethodGet)
+	listHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+		if ctx.Chain == nil {
+			ctx.Chain = c.db.Chain()
+		}
+		ctx.Chain = ctx.Chain.Table(c.tableName)
+		return nil
+	})
+	listHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
+		result := ctx.Chain.List()
+		if result.Error != nil {
+			return result.Error
+		}
+		if ctx.Data == nil {
+			ctx.Data = make(map[string]interface{})
+		}
+		ctx.Data["result"] = result.Data
+		return nil
+	})
+	listHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		if result, ok := ctx.Data["result"].([]map[string]interface{}); ok {
+			ctx.Data["result"] = result
+		}
+		JsonOk(ctx.GinContext, ctx.Data["result"])
+		return nil
+	})
+	c.AddHandler(LIST, http.MethodGet, listHandler)
+
+	// 分页处理器
+	pageHandler := NewHandler("/page", http.MethodGet)
+	pageHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+		page := 1
+		size := 10
+		if p := ctx.GinContext.Query("page"); p != "" {
+			if v, err := strconv.Atoi(p); err == nil && v > 0 {
+				page = v
+			}
+		}
+		if s := ctx.GinContext.Query("size"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				size = v
+			}
+		}
+		ctx.Data = map[string]interface{}{
+			"page": page,
+			"size": size,
 		}
 		return nil
 	})
-
-	// 构建SQL
-	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
-		// 处理查询条件
-		if err := parseQueryConditions(ctx.GinContext, ctx.Chain); err != nil {
-			return err
+	pageHandler.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
+		if ctx.Chain == nil {
+			ctx.Chain = c.db.Chain()
 		}
+		ctx.Chain = ctx.Chain.Table(c.tableName)
 
-		// 处理字段选择
-		if len(h.AllowedFields) > 0 {
-			ctx.Chain = ctx.Chain.Fields(h.AllowedFields...)
+		// 处理查询条件
+		if err := ParseQueryConditions(ctx.GinContext, ctx.Chain); err != nil {
+			return err
 		}
 
 		// 处理排序
@@ -288,973 +186,659 @@ func (dp *DefaultProcessors) List() *ItemHandler {
 				ctx.Chain = ctx.Chain.OrderBy(sort)
 			}
 		}
+
+		// 处理分页
+		page := ctx.Data["page"].(int)
+		size := ctx.Data["size"].(int)
+		offset := (page - 1) * size
+		ctx.Chain = ctx.Chain.Offset(offset).Limit(size)
 		return nil
 	})
+	pageHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
+		debugf("Executing SQL query")
+		// 获取分页参数
+		page := ctx.Data["page"].(int)
+		size := ctx.Data["size"].(int)
 
-	// 执行SQL
-	h.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		// 执行查询
-		ctx.Result = ctx.Chain.List()
-		return ctx.Result.Error()
-	})
+		// 获取总数
+		countChain := c.db.Chain().Table(c.tableName)
+		if err := ParseQueryConditions(ctx.GinContext, countChain); err != nil {
+			debugf("Error parsing query conditions for count: %v", err)
+			return err
+		}
 
-	// 处理响应
-	h.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
-		JsonOk(ctx.GinContext, gin.H{
-			"data": ctx.Result.Data,
-		})
+		// 执行 COUNT 查询
+		total, err := countChain.Count()
+		if err != nil {
+			debugf("Error getting total count: %v", err)
+			return err
+		}
+		debugf("Total count: %d", total)
+
+		// 获取分页数据
+		result := ctx.Chain.List()
+		if result.Error != nil {
+			debugf("Error getting page data: %v", result.Error)
+			return result.Error
+		}
+
+		// 构建分页响应
+		ctx.Data["result"] = map[string]interface{}{
+			"page":  page,
+			"size":  size,
+			"total": total,
+			"pages": int(math.Ceil(float64(total) / float64(size))),
+			"list":  result.Data,
+		}
+		debugf("Page result: %+v", ctx.Data["result"])
+
 		return nil
 	})
+	pageHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		if result, ok := ctx.Data["result"].(map[string]interface{}); ok {
+			if list, ok := result["list"].([]map[string]interface{}); ok {
+				result["list"] = list
+			}
+		}
+		JsonOk(ctx.GinContext, ctx.Data["result"])
+		return nil
+	})
+	c.AddHandler(PAGE, http.MethodGet, pageHandler)
 
-	return h
-}
-
-// Get 处理器
-func (dp *DefaultProcessors) Get() *ItemHandler {
-	h := &ItemHandler{
-		Path:   "/detail/:id",
-		Method: http.MethodGet,
-	}
-
-	// 构建对象
-	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
-		if v, exists := ctx.GinContext.Get("chain"); exists {
-			ctx.Chain = v.(*gom.Chain)
-		} else {
-			ctx.Chain = dp.crud.db.Chain().Table(dp.crud.tableName)
+	// 单条处理器
+	singleHandler := NewHandler("/detail/:id", http.MethodGet)
+	singleHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+		id := ctx.GinContext.Param("id")
+		if id == "" {
+			return fmt.Errorf("id is required")
+		}
+		ctx.Data = map[string]interface{}{
+			"id": id,
 		}
 		return nil
 	})
-
-	// 构建SQL
-	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
-		if len(h.AllowedFields) > 0 {
-			ctx.Chain = ctx.Chain.Fields(h.AllowedFields...)
+	singleHandler.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
+		if ctx.Chain == nil {
+			ctx.Chain = c.db.Chain()
 		}
-		ctx.Chain = ctx.Chain.Eq("id", ctx.GinContext.Param("id"))
+		ctx.Chain = ctx.Chain.Table(c.tableName).Eq("id", ctx.Data["id"])
 		return nil
 	})
-
-	// 执行SQL
-	h.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		ctx.Result = ctx.Chain.One()
-		return ctx.Result.Error()
-	})
-
-	// 处理响应
-	h.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
-		if ctx.Result.Empty() {
-			JsonErr(ctx.GinContext, CodeInvalid, "record not found")
+	singleHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
+		result := ctx.Chain.First()
+		if result.Error != nil {
+			if result.Error.Error() == "sql: no rows in result set" {
+				JsonErr(ctx.GinContext, CodeNotFound, "record not found")
+				ctx.GinContext.Abort()
+				return nil
+			}
+			return result.Error
+		}
+		if len(result.Data) == 0 {
+			JsonErr(ctx.GinContext, CodeNotFound, "record not found")
+			ctx.GinContext.Abort()
 			return nil
 		}
-		JsonOk(ctx.GinContext, ctx.Result.Data[0])
+		ctx.Data["result"] = result.Data[0]
 		return nil
 	})
-
-	return h
-}
-
-// Create 处理器
-func (dp *DefaultProcessors) Create() *ItemHandler {
-	h := &ItemHandler{
-		Path:   "/save",
-		Method: http.MethodPost,
-	}
-
-	// 预处理
-	h.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
-		data := make(map[string]interface{})
-		if err := ctx.GinContext.ShouldBindJSON(&data); err != nil {
-			return err
+	singleHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		if result, ok := ctx.Data["result"].(map[string]interface{}); ok {
+			ctx.Data["result"] = result
 		}
-		ctx.Data["input"] = data
-		return nil
-	})
-
-	// 构建对象
-	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
-		if v, exists := ctx.GinContext.Get("chain"); exists {
-			ctx.Chain = v.(*gom.Chain)
-		} else {
-			ctx.Chain = dp.crud.db.Chain().Table(dp.crud.tableName)
-		}
-		return nil
-	})
-
-	// 构建SQL
-	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
-		data := ctx.Data["input"].(map[string]interface{})
-		if len(h.AllowedFields) > 0 {
-			filtered := make(map[string]interface{})
-			for _, field := range h.AllowedFields {
-				if value, ok := data[field]; ok {
-					filtered[field] = value
-				}
-			}
-			data = filtered
-		}
-		ctx.Chain = ctx.Chain.Values(data)
-		return nil
-	})
-
-	// 执行SQL
-	h.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		result, err := ctx.Chain.Save()
-		if err != nil {
-			return err
-		}
-		ctx.Data["result"] = result
-		return nil
-	})
-
-	// 处理响应
-	h.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
 		JsonOk(ctx.GinContext, ctx.Data["result"])
 		return nil
 	})
+	c.AddHandler(SINGLE, http.MethodGet, singleHandler)
 
-	return h
-}
-
-// Update 处理器
-func (dp *DefaultProcessors) Update() *ItemHandler {
-	h := &ItemHandler{
-		Path:   "/update/:id",
-		Method: http.MethodPut,
-	}
-
-	// 预处理
-	h.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
-		data := make(map[string]interface{})
+	// 保存处理器
+	saveHandler := NewHandler("/save", http.MethodPost)
+	saveHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+		var data map[string]interface{}
 		if err := ctx.GinContext.ShouldBindJSON(&data); err != nil {
 			return err
 		}
-		ctx.Data["input"] = data
-		return nil
-	})
-
-	// 构建对象
-	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
-		if v, exists := ctx.GinContext.Get("chain"); exists {
-			ctx.Chain = v.(*gom.Chain)
-		} else {
-			ctx.Chain = dp.crud.db.Chain().Table(dp.crud.tableName)
+		ctx.Data = map[string]interface{}{
+			"values": data,
 		}
 		return nil
 	})
-
-	// 构建SQL
-	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
-		data := ctx.Data["input"].(map[string]interface{})
-		if len(h.AllowedFields) > 0 {
-			filtered := make(map[string]interface{})
-			for _, field := range h.AllowedFields {
-				if value, ok := data[field]; ok {
-					filtered[field] = value
-				}
-			}
-			data = filtered
+	saveHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
+		values, ok := ctx.Data["values"].(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid values")
 		}
-		ctx.Chain = ctx.Chain.Eq("id", ctx.GinContext.Param("id")).Values(data)
-		return nil
-	})
-
-	// 执行SQL
-	h.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		result, err := ctx.Chain.Save()
+		result := c.db.Chain().Table(c.tableName).Values(values).Save()
+		if result.Error != nil {
+			return result.Error
+		}
+		id, err := result.LastInsertId()
 		if err != nil {
 			return err
 		}
-		ctx.Data["result"] = result
+		// 查询新创建的记录
+		queryResult := c.db.Chain().Table(c.tableName).Eq("id", id).First()
+		if queryResult.Error != nil {
+			return queryResult.Error
+		}
+		ctx.Data["result"] = queryResult.Data[0]
 		return nil
 	})
-
-	// 处理响应
-	h.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+	saveHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
 		JsonOk(ctx.GinContext, ctx.Data["result"])
 		return nil
 	})
+	c.AddHandler(SAVE, http.MethodPost, saveHandler)
 
-	return h
-}
-
-// Delete 处理器
-func (dp *DefaultProcessors) Delete() *ItemHandler {
-	h := &ItemHandler{
-		Path:   "/delete/:id",
-		Method: http.MethodDelete,
-	}
-
-	// 构建对象
-	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
-		if v, exists := ctx.GinContext.Get("chain"); exists {
-			ctx.Chain = v.(*gom.Chain)
-		} else {
-			ctx.Chain = dp.crud.db.Chain().Table(dp.crud.tableName)
+	// 更新处理器
+	updateHandler := NewHandler("/update/:id", http.MethodPut)
+	updateHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+		id := ctx.GinContext.Param("id")
+		if id == "" {
+			return fmt.Errorf("id is required")
+		}
+		var data map[string]interface{}
+		if err := ctx.GinContext.ShouldBindJSON(&data); err != nil {
+			return err
+		}
+		ctx.Data = map[string]interface{}{
+			"id":     id,
+			"values": data,
 		}
 		return nil
 	})
-
-	// 构建SQL
-	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
-		ctx.Chain = ctx.Chain.Eq("id", ctx.GinContext.Param("id"))
+	updateHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
+		values, ok := ctx.Data["values"].(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid values")
+		}
+		result := c.db.Chain().Table(c.tableName).Eq("id", ctx.Data["id"]).Update(values)
+		if result.Error != nil {
+			return result.Error
+		}
+		// 查询更新后的记录
+		queryResult := c.db.Chain().Table(c.tableName).Eq("id", ctx.Data["id"]).First()
+		if queryResult.Error != nil {
+			return queryResult.Error
+		}
+		ctx.Data["result"] = queryResult.Data[0]
 		return nil
 	})
+	updateHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		JsonOk(ctx.GinContext, ctx.Data["result"])
+		return nil
+	})
+	c.AddHandler(UPDATE, http.MethodPut, updateHandler)
 
-	// 执行SQL
-	h.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		result, err := ctx.Chain.Delete()
+	// 删除处理器
+	deleteHandler := NewHandler("/delete/:id", http.MethodDelete)
+	deleteHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
+		id := ctx.GinContext.Param("id")
+		if id == "" {
+			return fmt.Errorf("id is required")
+		}
+		ctx.Data = map[string]interface{}{
+			"id": id,
+		}
+		return nil
+	})
+	deleteHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
+		// 先查询记录是否存在
+		queryResult := c.db.Chain().Table(c.tableName).Eq("id", ctx.Data["id"]).First()
+		if queryResult.Error != nil {
+			if queryResult.Error.Error() == "sql: no rows in result set" {
+				JsonErr(ctx.GinContext, CodeNotFound, "record not found")
+				return nil
+			}
+			return queryResult.Error
+		}
+
+		result := c.db.Chain().Table(c.tableName).Eq("id", ctx.Data["id"]).Delete()
+		if result.Error != nil {
+			return result.Error
+		}
+		affected, err := result.RowsAffected()
 		if err != nil {
 			return err
 		}
-		ctx.Data["result"] = result
+		ctx.Data["result"] = map[string]interface{}{
+			"affected": affected,
+		}
 		return nil
 	})
-
-	// 处理响应
-	h.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
-		JsonOk(ctx.GinContext, gin.H{
-			"message": "deleted successfully",
-			"result":  ctx.Data["result"],
-		})
+	deleteHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		JsonOk(ctx.GinContext, ctx.Data["result"])
 		return nil
 	})
+	c.AddHandler(DELETE, http.MethodDelete, deleteHandler)
+}
 
-	return h
+// parseQueryConditions 解析查询条件
+func ParseQueryConditions(c *gin.Context, chain *gom.Chain) error {
+	// 处理字段选择
+	if fields := c.Query("fields"); fields != "" {
+		chain = chain.Fields(strings.Split(fields, ",")...)
+	}
+
+	// 从URL参数中解析查询条件
+	for k, v := range c.Request.URL.Query() {
+		if len(v) > 0 && k != "page" && k != "size" && k != "sort" && k != "fields" {
+			// 处理范围查询
+			if strings.HasSuffix(k, "_gte") {
+				field := strings.TrimSuffix(k, "_gte")
+				chain = chain.Where(field, define.OpGe, v[0])
+			} else if strings.HasSuffix(k, "_lte") {
+				field := strings.TrimSuffix(k, "_lte")
+				chain = chain.Where(field, define.OpLe, v[0])
+			} else if strings.HasSuffix(k, "_gt") {
+				field := strings.TrimSuffix(k, "_gt")
+				chain = chain.Where(field, define.OpGt, v[0])
+			} else if strings.HasSuffix(k, "_lt") {
+				field := strings.TrimSuffix(k, "_lt")
+				chain = chain.Where(field, define.OpLt, v[0])
+			} else if strings.HasSuffix(k, "_ne") {
+				field := strings.TrimSuffix(k, "_ne")
+				chain = chain.Where(field, define.OpNe, v[0])
+			} else if strings.HasSuffix(k, "_like") {
+				field := strings.TrimSuffix(k, "_like")
+				chain = chain.Where(field, define.OpLike, fmt.Sprintf("%%%s%%", v[0]))
+			} else {
+				chain = chain.Where(k, define.OpEq, v[0])
+			}
+		}
+	}
+	return nil
 }
 
 // Page 处理器
 func (dp *DefaultProcessors) Page() *ItemHandler {
 	h := &ItemHandler{
-		Path:   "/page",
-		Method: http.MethodGet,
+		Path:       "/page",
+		Method:     http.MethodGet,
+		processors: make(map[string]map[string][]ProcessorFunc),
 	}
-	h.Handler = h.HandleRequest
 
 	// 预处理
 	h.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
-		page, size := parsePagination(ctx.GinContext)
+		debugf("Processing pagination parameters")
+		// 获取分页参数
+		page := 1
+		size := 10
+		if p := ctx.GinContext.Query("page"); p != "" {
+			if v, err := strconv.Atoi(p); err == nil && v > 0 {
+				page = v
+			}
+		}
+		if s := ctx.GinContext.Query("size"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				size = v
+			}
+		}
 		ctx.Data["page"] = page
 		ctx.Data["size"] = size
+		debugf("Pagination: page=%d, size=%d", page, size)
 		return nil
 	})
 
 	// 构建对象
 	h.AddProcessor(BuildQuery, BeforePhase, func(ctx *ProcessContext) error {
+		debugf("Building query chain")
 		if v, exists := ctx.GinContext.Get("chain"); exists {
 			ctx.Chain = v.(*gom.Chain)
+			debugf("Using existing chain")
 		} else {
 			if dp.crud.tableName == "" {
 				return fmt.Errorf("table name is not set")
 			}
+			if dp.crud.db == nil {
+				return fmt.Errorf("database connection is not set")
+			}
 			ctx.Chain = dp.crud.db.Chain().Table(dp.crud.tableName)
+			debugf("Created new chain for table: %s", dp.crud.tableName)
 		}
 		return nil
 	})
 
 	// 构建SQL
 	h.AddProcessor(BuildQuery, OnPhase, func(ctx *ProcessContext) error {
+		debugf("Building SQL query")
+		debugf("Parsing query conditions from URL: %s", ctx.GinContext.Request.URL.String())
+
 		// 处理查询条件
-		if err := parseQueryConditions(ctx.GinContext, ctx.Chain); err != nil {
+		if err := ParseQueryConditions(ctx.GinContext, ctx.Chain); err != nil {
+			debugf("Error parsing query conditions: %v", err)
 			return err
 		}
 
 		// 处理字段选择
 		if len(h.AllowedFields) > 0 {
 			ctx.Chain = ctx.Chain.Fields(h.AllowedFields...)
+			debugf("Selected fields: %v", h.AllowedFields)
 		}
 
-		// 处理排序和分页
-		page := ctx.Data["page"].(int)
-		size := ctx.Data["size"].(int)
-		ctx.Chain = ctx.Chain.Offset((page - 1) * size).Limit(size)
-
+		// 处理排序
 		if sort := ctx.GinContext.Query("sort"); sort != "" {
 			if sort[0] == '-' {
 				ctx.Chain = ctx.Chain.OrderByDesc(sort[1:])
+				debugf("Applied descending sort on field: %s", sort[1:])
 			} else {
 				ctx.Chain = ctx.Chain.OrderBy(sort)
+				debugf("Applied ascending sort on field: %s", sort)
 			}
 		}
+
+		// 处理分页
+		page := ctx.Data["page"].(int)
+		size := ctx.Data["size"].(int)
+		offset := (page - 1) * size
+		ctx.Chain = ctx.Chain.Offset(offset).Limit(size)
+		debugf("Applied pagination: offset=%d, limit=%d", offset, size)
+
 		return nil
 	})
 
 	// 执行SQL
 	h.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
-		// 获取总数
-		total, err := ctx.Chain.Count()
-		if err != nil {
-			return err
-		}
-		ctx.Data["total"] = total
-
-		// 执行查询
-		ctx.Result = ctx.Chain.List()
-		return ctx.Result.Error()
-	})
-
-	// 处理响应
-	h.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		debugf("Executing SQL query")
+		// 获取分页参数
 		page := ctx.Data["page"].(int)
 		size := ctx.Data["size"].(int)
-		total := ctx.Data["total"].(int64)
 
-		JsonOk(ctx.GinContext, gin.H{
-			"total":    total,
-			"page":     page,
-			"size":     size,
-			"data":     ctx.Result.Data,
-			"lastPage": (page * size) >= int(total),
-		})
+		// 获取总数
+		countChain := dp.crud.db.Chain().Table(dp.crud.tableName)
+		if err := ParseQueryConditions(ctx.GinContext, countChain); err != nil {
+			debugf("Error parsing query conditions for count: %v", err)
+			return err
+		}
+
+		// 执行 COUNT 查询
+		total, err := countChain.Count()
+		if err != nil {
+			debugf("Error getting total count: %v", err)
+			return err
+		}
+		debugf("Total count: %d", total)
+
+		// 获取分页数据
+		result := ctx.Chain.List()
+		if result.Error != nil {
+			debugf("Error getting page data: %v", result.Error)
+			return result.Error
+		}
+
+		// 构建分页响应
+		ctx.Data["result"] = map[string]interface{}{
+			"page":  page,
+			"size":  size,
+			"total": total,
+			"pages": int(math.Ceil(float64(total) / float64(size))),
+			"list":  result.Data,
+		}
+		debugf("Page result: %+v", ctx.Data["result"])
+
+		return nil
+	})
+
+	// 响应处理
+	h.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		debugf("Processing response")
+		JsonOk(ctx.GinContext, ctx.Data["result"])
 		return nil
 	})
 
 	return h
 }
 
-// New2 创建新的CRUD处理器（自动获取表名）
-func New2(db *gom.DB, entity interface{}) *Crud {
-	tableName, err := db.GetTableName(entity)
-	if err != nil {
-		// 如果获取表名失败，使用结构体名称的小写形式作为表名
-		t := reflect.TypeOf(entity)
-		if t.Kind() == reflect.Ptr {
-			t = t.Elem()
-		}
-		tableName = strings.ToLower(t.Name())
+// AddProcessor 添加处理器
+func (h *ItemHandler) AddProcessor(phase string, timing string, processor ProcessorFunc) *ItemHandler {
+	if h.processors == nil {
+		h.processors = make(map[string]map[string][]ProcessorFunc)
 	}
-
-	crud := &Crud{
-		db:        db,
-		entity:    entity,
-		tableName: tableName,
-		handlers:  make(map[string]*ItemHandler),
+	if h.processors[phase] == nil {
+		h.processors[phase] = make(map[string][]ProcessorFunc)
 	}
-
-	// 初始化默认处理器
-	crud.initDefaultHandlers()
-	cruds = append(cruds, crud)
-	return crud
+	h.processors[phase][timing] = append(h.processors[phase][timing], processor)
+	return h
 }
 
-// New 创建新的CRUD处理器
-func New(db *gom.DB, entity interface{}, tableName string) *Crud {
-	crud := &Crud{
-		db:        db,
-		entity:    entity,
-		tableName: tableName,
-		handlers:  make(map[string]*ItemHandler),
+// HandleRequest 处理请求
+func (h *ItemHandler) HandleRequest(c *gin.Context) {
+	if _, exists := c.Get("response_sent"); exists {
+		return
 	}
 
-	// 初始化默认处理器
-	crud.initDefaultHandlers()
-	cruds = append(cruds, crud)
-	return crud
-}
-
-// initDefaultHandlers 初始化默认处理器
-func (c *Crud) initDefaultHandlers() {
-	processors := NewDefaultProcessors(c)
-
-	// 列表处理器
-	c.handlers[LIST] = processors.List()
-
-	// 分页处理器
-	c.handlers[PAGE] = processors.Page()
-
-	// 详情处理器
-	c.handlers[SINGLE] = processors.Get()
-
-	// 创建处理器
-	c.handlers[SAVE] = processors.Create()
-
-	// 更新处理器
-	c.handlers[UPDATE] = processors.Update()
-
-	// 删除处理器
-	c.handlers[DELETE] = processors.Delete()
-}
-
-// GetHandler 获取指定名称的处理器
-func (ac *Crud) GetHandler(name string) (*ItemHandler, bool) {
-	handler, ok := ac.handlers[name]
-	if !ok {
-		return nil, false
+	ctx := &ProcessContext{
+		GinContext: c,
+		Data:       make(map[string]interface{}),
 	}
-	return handler, true
-}
+	c.Set("process_context", ctx)
 
-// AddHandler 添加自定义处理器
-func (ac *Crud) AddHandler(name string, method string, handler *ItemHandler) {
-	ac.handlers[name] = handler
-}
-
-// filterFields 过滤字段
-func (c *Crud) filterFields(h *ItemHandler, data interface{}) map[string]interface{} {
-	if len(h.AllowedFields) == 0 {
-		if m, ok := data.(map[string]interface{}); ok {
-			return m
-		}
-		return nil
-	}
-
-	allowedMap := make(map[string]bool)
-	for _, field := range h.AllowedFields {
-		allowedMap[field] = true
-	}
-
-	switch v := data.(type) {
-	case map[string]interface{}:
-		result := make(map[string]interface{})
-		for key, value := range v {
-			if allowedMap[key] {
-				result[key] = value
+	for _, phase := range []string{PreProcess, BuildQuery, Execute, PostProcess} {
+		if err := h.executeProcessors(phase, BeforePhase, ctx); err != nil {
+			if _, exists := c.Get("response_sent"); !exists {
+				JsonErr(c, CodeError, err.Error())
+				c.Set("response_sent", true)
 			}
+			return
 		}
-		return result
-	case []map[string]interface{}:
-		// 如果是数组，只返回第一个元素
-		if len(v) > 0 {
-			result := make(map[string]interface{})
-			for key, value := range v[0] {
-				if allowedMap[key] {
-					result[key] = value
-				}
+		if err := h.executeProcessors(phase, OnPhase, ctx); err != nil {
+			if _, exists := c.Get("response_sent"); !exists {
+				JsonErr(c, CodeError, err.Error())
+				c.Set("response_sent", true)
 			}
-			return result
+			return
 		}
-		return make(map[string]interface{})
-	default:
-		return make(map[string]interface{})
-	}
-}
-
-// List 列表查询
-func (ac *Crud) List(c *gin.Context) {
-	// 如果请求包含分页参数，重定向到分页处理器
-	if c.Query("page") != "" || c.Query("size") != "" {
-		if handler, ok := ac.handlers[PAGE]; ok {
-			handler.Handler(c)
+		if err := h.executeProcessors(phase, AfterPhase, ctx); err != nil {
+			if _, exists := c.Get("response_sent"); !exists {
+				JsonErr(c, CodeError, err.Error())
+				c.Set("response_sent", true)
+			}
+			return
+		}
+		if c.IsAborted() {
 			return
 		}
 	}
-
-	var chain *gom.Chain
-	if v, exists := c.Get("chain"); exists {
-		chain = v.(*gom.Chain)
-	} else {
-		chain = ac.db.Chain().Table(ac.tableName)
-	}
-
-	// 处理查询条件
-	if err := parseQueryConditions(c, chain); err != nil {
-		JsonErr(c, CodeInvalid, err.Error())
-		return
-	}
-
-	// 获取当前处理器
-	h := ac.handlers[LIST]
-
-	// 处理字段选择
-	if len(h.AllowedFields) > 0 {
-		chain = chain.Fields(h.AllowedFields...)
-	}
-
-	// 处理排序
-	if sort := c.Query("sort"); sort != "" {
-		if sort[0] == '-' {
-			chain = chain.OrderByDesc(sort[1:])
-		} else {
-			chain = chain.OrderBy(sort)
-		}
-	}
-
-	// 执行查询
-	result := chain.List()
-	if err := result.Error(); err != nil {
-		JsonErr(c, CodeError, err.Error())
-		return
-	}
-
-	JsonOk(c, gin.H{
-		"data": result.Data,
-	})
 }
 
-// Create 创建记录
-func (ac *Crud) Create(c *gin.Context) {
-	data := make(map[string]interface{})
-	if err := c.ShouldBindJSON(&data); err != nil {
-		JsonErr(c, CodeInvalid, err.Error())
-		return
-	}
-
-	// 过滤字段
-	h := ac.handlers[SAVE]
-	data = ac.filterFields(h, data)
-
-	var chain *gom.Chain
-	if v, exists := c.Get("chain"); exists {
-		chain = v.(*gom.Chain)
-	} else {
-		chain = ac.db.Chain().Table(ac.tableName)
-	}
-
-	chain = chain.Values(data)
-	result, err := chain.Save()
-	if err != nil {
-		JsonErr(c, CodeError, err.Error())
-		return
-	}
-
-	JsonOk(c, result)
-}
-
-// Get 获取单条记录
-func (ac *Crud) Get(c *gin.Context) {
-	var chain *gom.Chain
-	if v, exists := c.Get("chain"); exists {
-		chain = v.(*gom.Chain)
-	} else {
-		chain = ac.db.Chain().Table(ac.tableName)
-	}
-
-	// 处理字段选择
-	h := ac.handlers[SINGLE]
-	if len(h.AllowedFields) > 0 {
-		chain = chain.Fields(h.AllowedFields...)
-	}
-
-	chain = chain.Eq("id", c.Param("id"))
-	result := chain.One()
-
-	if err := result.Error(); err != nil {
-		JsonErr(c, CodeError, "record not found")
-		return
-	}
-
-	if result.Empty() {
-		JsonErr(c, CodeInvalid, "record not found")
-		return
-	}
-
-	JsonOk(c, result.Data[0])
-}
-
-// Update 更新记录
-func (ac *Crud) Update(c *gin.Context) {
-	data := make(map[string]interface{})
-	if err := c.ShouldBindJSON(&data); err != nil {
-		JsonErr(c, CodeInvalid, err.Error())
-		return
-	}
-
-	// 过滤字段
-	h := ac.handlers[UPDATE]
-	data = ac.filterFields(h, data)
-
-	var chain *gom.Chain
-	if v, exists := c.Get("chain"); exists {
-		chain = v.(*gom.Chain)
-	} else {
-		chain = ac.db.Chain().Table(ac.tableName)
-	}
-
-	chain = chain.Eq("id", c.Param("id")).Values(data)
-	result, err := chain.Save()
-	if err != nil {
-		JsonErr(c, CodeError, err.Error())
-		return
-	}
-
-	JsonOk(c, result)
-}
-
-// Delete 删除记录
-func (ac *Crud) Delete(c *gin.Context) {
-	var chain *gom.Chain
-	if v, exists := c.Get("chain"); exists {
-		chain = v.(*gom.Chain)
-	} else {
-		chain = ac.db.Chain().Table(ac.tableName)
-	}
-
-	chain = chain.Eq("id", c.Param("id"))
-	result, err := chain.Delete()
-
-	if err != nil {
-		JsonErr(c, CodeError, err.Error())
-		return
-	}
-
-	JsonOk(c, gin.H{
-		"message": "deleted successfully",
-		"result":  result,
-	})
-}
-
-// 辅助函数
-func parsePagination(c *gin.Context) (page, size int) {
-	page, _ = strconv.Atoi(c.DefaultQuery("page", "1"))
-	size, _ = strconv.Atoi(c.DefaultQuery("size", "10"))
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 {
-		size = 10
-	}
-	return
-}
-
-func parseQueryConditions(c *gin.Context, chain *gom.Chain) error {
-	for key, values := range c.Request.URL.Query() {
-		if len(values) == 0 || key == "page" || key == "size" || key == "sort" {
-			continue
-		}
-
-		value := values[0]
-		if value == "" {
-			continue
-		}
-
-		// 支持操作符: eq, ne, gt, ge, lt, le, like, in
-		// 格式: field__op=value
-		parts := strings.Split(key, "__")
-		field := parts[0]
-		op := "eq"
-		if len(parts) > 1 {
-			op = parts[1]
-		}
-
-		switch op {
-		case "eq":
-			chain = chain.Eq(field, value)
-		case "ne":
-			chain = chain.Ne(field, value)
-		case "gt":
-			chain = chain.Gt(field, value)
-		case "ge":
-			chain = chain.Ge(field, value)
-		case "lt":
-			chain = chain.Lt(field, value)
-		case "le":
-			chain = chain.Le(field, value)
-		case "like":
-			chain = chain.Like(field, value)
-		case "in":
-			chain = chain.In(field, strings.Split(value, ","))
-		default:
-			return fmt.Errorf("unsupported operator: %s", op)
-		}
-	}
-	return nil
-}
-
-// Register 注册所有CRUD路由
-func (ac *Crud) Register(r gin.IRouter) {
-	for _, h := range ac.handlers {
-		switch h.Method {
-		case http.MethodGet:
-			r.GET(h.Path, h.Handler)
-		case http.MethodPost:
-			r.POST(h.Path, h.Handler)
-		case http.MethodPut:
-			r.PUT(h.Path, h.Handler)
-		case http.MethodDelete:
-			r.DELETE(h.Path, h.Handler)
-		case http.MethodPatch:
-			r.PATCH(h.Path, h.Handler)
-		case "ANY", "*":
-			r.Any(h.Path, h.Handler)
-		}
-	}
-}
-
-// validateOrderFields 验证排序字段是否合法
-func (h *ItemHandler) validateOrderFields(orders []*define.OrderBy) error {
-	if len(h.AllowedFields) == 0 {
+// executeProcessors 执行处理器
+func (h *ItemHandler) executeProcessors(phase string, timing string, ctx *ProcessContext) error {
+	if h.processors == nil {
 		return nil
 	}
-
-	allowedMap := make(map[string]bool)
-	for _, field := range h.AllowedFields {
-		allowedMap[field] = true
+	if h.processors[phase] == nil {
+		return nil
 	}
-
-	for _, order := range orders {
-		if !allowedMap[order.Field] {
-			return fmt.Errorf("invalid order field: %s", order.Field)
+	if h.processors[phase][timing] == nil {
+		return nil
+	}
+	for _, processor := range h.processors[phase][timing] {
+		if err := processor(ctx); err != nil {
+			return err
 		}
 	}
-
 	return nil
 }
 
-// applyOrderBy 应用排序
-func applyOrderBy(chain *gom.Chain, orders []*define.OrderBy) *gom.Chain {
-	if len(orders) == 0 {
-		return chain
-	}
-
-	for _, order := range orders {
-		if order.Type == define.OrderDesc {
-			chain = chain.OrderByDesc(order.Field)
-		} else {
-			chain = chain.OrderBy(order.Field)
-		}
-	}
-
-	return chain
-}
-
-// SetOrders 设置排序
-func (h *ItemHandler) SetOrders(orders ...*define.OrderBy) *ItemHandler {
-	h.Orders = orders
+// SetDescription 设置描述
+func (h *ItemHandler) SetDescription(desc string) *ItemHandler {
+	h.Description = desc
 	return h
 }
 
-// 全局路由信息
-var (
-	registeredHandlers = make(map[string][]HandlerInfo)
-)
-
-// HandlerInfo 处理器信息
-type HandlerInfo struct {
-	Path        string   `json:"path"`        // 完整路径
-	Method      string   `json:"method"`      // HTTP方法
-	Model       string   `json:"model"`       // 模型名称
-	Fields      []string `json:"fields"`      // 允许的字段
-	Operations  string   `json:"operations"`  // 操作类型
-	Description string   `json:"description"` // 处理器描述
+// GetHandler 获取处理器
+func (c *Crud) GetHandler(handlerType string) (*ItemHandler, bool) {
+	handler, ok := c.handlers[handlerType]
+	return handler, ok
 }
 
-// ModelInfo 模型信息
-type ModelInfo struct {
-	Name        string        `json:"name"`        // 模型名称
-	Description string        `json:"description"` // 模型描述
-	Handlers    []HandlerInfo `json:"handlers"`    // 处理器列表
+// AddHandler 添加处理器
+func (c *Crud) AddHandler(handlerType string, method string, handler *ItemHandler) {
+	c.handlers[handlerType] = handler
 }
 
-// RegisterHandler 注册处理器信息
-func (c *Crud) RegisterHandler(modelName string, info HandlerInfo) {
-	if _, ok := registeredHandlers[modelName]; !ok {
-		registeredHandlers[modelName] = make([]HandlerInfo, 0)
-	}
-	registeredHandlers[modelName] = append(registeredHandlers[modelName], info)
-}
-
-// RegisterRoutes 注册路由并记录信息
-func (c *Crud) RegisterRoutes(group *gin.RouterGroup, path string) {
-	modelName := reflect.TypeOf(c.entity).Elem().Name()
-	basePath := path
-
-	// 注册默认处理器
-	for name, handler := range c.handlers {
-		fullPath := basePath + handler.Path
-		group.Handle(handler.Method, fullPath, handler.Handler)
-
-		// 记录路由信息
-		info := HandlerInfo{
-			Path:        fullPath,
-			Method:      handler.Method,
-			Model:       modelName,
-			Fields:      handler.AllowedFields,
-			Operations:  name,
-			Description: handler.description,
-		}
-		c.RegisterHandler(modelName, info)
-	}
-}
-
-// RegisterApi 注册API信息路由
-func RegisterApi(router gin.IRouter, path string) {
-	router.GET(path, func(c *gin.Context) {
-		// 将 map 转换为 slice，以便添加模型描述
-		models := make([]ModelInfo, 0)
-		for modelName, handlers := range registeredHandlers {
-			// 查找第一个处理器的 Crud 实例以获取描述
-			var description string
-			for _, crud := range cruds {
-				if reflect.TypeOf(crud.entity).Elem().Name() == modelName {
-					description = crud.description
-					break
-				}
-			}
-			models = append(models, ModelInfo{
-				Name:        modelName,
-				Description: description,
-				Handlers:    handlers,
-			})
-		}
-		JsonOk(c, models)
-	})
-}
-
-// GetRegisteredHandlers 获取所有注册的处理器信息
-func GetRegisteredHandlers() map[string][]HandlerInfo {
-	return registeredHandlers
-}
-
-// SetDescription 设置实体描述
+// SetDescription 设置描述
 func (c *Crud) SetDescription(desc string) *Crud {
-	c.description = desc
+	c.Description = desc
 	return c
 }
 
-// SetDescription 设置处理器描述
-func (h *ItemHandler) SetDescription(desc string) *ItemHandler {
-	h.description = desc
-	return h
+// RegisterRoutes 注册路由
+func (c *Crud) RegisterRoutes(group *gin.RouterGroup, prefix string) {
+	for _, handler := range c.handlers {
+		path := prefix + handler.Path
+		group.Handle(handler.Method, path, handler.HandleRequest)
+	}
 }
 
-// 存储所有的 Crud 实例
-var cruds []*Crud
-
-// apiDocTemplate HTML文档模板
-const apiDocTemplate = `
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>API Documentation</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .model {
-            background: #f8f9fa;
-            border-radius: 5px;
-            padding: 20px;
-            margin-bottom: 30px;
-        }
-        .model-name {
-            font-size: 24px;
-            color: #2c3e50;
-            margin-bottom: 10px;
-        }
-        .model-description {
-            color: #666;
-            margin-bottom: 20px;
-        }
-        .handler {
-            background: white;
-            border: 1px solid #e9ecef;
-            border-radius: 4px;
-            padding: 15px;
-            margin-bottom: 15px;
-        }
-        .method {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 3px;
-            font-size: 12px;
-            font-weight: bold;
-            margin-right: 10px;
-        }
-        .get { background: #61affe; color: white; }
-        .post { background: #49cc90; color: white; }
-        .put { background: #fca130; color: white; }
-        .delete { background: #f93e3e; color: white; }
-        .path {
-            font-family: monospace;
-            font-size: 14px;
-            color: #3b4151;
-        }
-        .fields {
-            margin-top: 10px;
-            color: #666;
-        }
-        .fields span {
-            display: inline-block;
-            background: #e9ecef;
-            padding: 2px 6px;
-            border-radius: 3px;
-            margin: 2px;
-            font-size: 12px;
-        }
-        .description {
-            margin-top: 10px;
-            font-style: italic;
-            color: #666;
-        }
-    </style>
-</head>
-<body>
-    <h1>API Documentation</h1>
-    {{range .}}
-    <div class="model">
-        <div class="model-name">{{.Name}}</div>
-        <div class="model-description">{{.Description}}</div>
-        {{range .Handlers}}
-        <div class="handler">
-            <div>
-                <span class="method {{toLowerCase .Method}}">{{.Method}}</span>
-                <span class="path">{{.Path}}</span>
-            </div>
-            {{if .Description}}
-            <div class="description">{{.Description}}</div>
-            {{end}}
-            {{if .Fields}}
-            <div class="fields">
-                Fields: {{range .Fields}}<span>{{.}}</span>{{end}}
-            </div>
-            {{end}}
-        </div>
-        {{end}}
-    </div>
-    {{end}}
-</body>
-</html>
-`
-
-// RegisterApiDoc 注册API文档路由
-func RegisterApiDoc(router gin.IRouter, path string) {
-	router.GET(path, func(c *gin.Context) {
-		// 将 map 转换为 slice，以便添加模型描述
-		models := make([]ModelInfo, 0)
-		for modelName, handlers := range registeredHandlers {
-			// 查找对应的 Crud 实例以获取描述
-			var description string
-			for _, crud := range cruds {
-				if reflect.TypeOf(crud.entity).Elem().Name() == modelName {
-					description = crud.description
-					break
-				}
-			}
-			models = append(models, ModelInfo{
-				Name:        modelName,
-				Description: description,
-				Handlers:    handlers,
-			})
+// RegisterApi 注册 API 信息
+func (c *Crud) RegisterApi() map[string]interface{} {
+	apis := make(map[string]interface{})
+	for handlerType, handler := range c.handlers {
+		apiInfo := map[string]interface{}{
+			"path":        handler.Path,
+			"method":      handler.Method,
+			"type":        handlerType,
+			"fields":      handler.AllowedFields,
+			"description": handler.Description,
 		}
+		apis[handlerType] = apiInfo
+	}
+	return apis
+}
 
-		// 创建模板
-		tmpl := template.New("api-doc")
+// RegisterApi 注册 API 信息
+func RegisterApi(r *gin.Engine, path string) {
+	apiDocs := make(map[string]interface{})
+	for _, crud := range registeredCruds {
+		modelType := reflect.TypeOf(crud.model)
+		if modelType.Kind() == reflect.Ptr {
+			modelType = modelType.Elem()
+		}
+		apiDocs[crud.tableName] = map[string]interface{}{
+			"model_name":  modelType.Name(),
+			"description": crud.Description,
+			"apis":        crud.RegisterApi(),
+		}
+	}
 
-		// 添加自定义函数
-		tmpl = tmpl.Funcs(template.FuncMap{
-			"toLowerCase": strings.ToLower,
+	r.GET(path, func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"code": 0,
+			"data": apiDocs,
 		})
-
-		// 解析模板
-		tmpl, err := tmpl.Parse(apiDocTemplate)
-		if err != nil {
-			JsonErr(c, CodeError, "Failed to parse template: "+err.Error())
-			return
-		}
-
-		// 设置响应头
-		c.Header("Content-Type", "text/html; charset=utf-8")
-
-		// 执行模板
-		if err := tmpl.Execute(c.Writer, models); err != nil {
-			JsonErr(c, CodeError, "Failed to execute template: "+err.Error())
-			return
-		}
 	})
+}
+
+// RegisterApiDoc 注册 API 文档
+func RegisterApiDoc(r *gin.Engine, path string) {
+	apiDocs := make(map[string]interface{})
+	for _, crud := range registeredCruds {
+		modelType := reflect.TypeOf(crud.model)
+		if modelType.Kind() == reflect.Ptr {
+			modelType = modelType.Elem()
+		}
+		apiDocs[crud.tableName] = map[string]interface{}{
+			"model_name":  modelType.Name(),
+			"description": crud.Description,
+			"apis":        crud.RegisterApi(),
+		}
+	}
+
+	r.GET(path, func(c *gin.Context) {
+		html := `<!DOCTYPE html>
+		<html>
+		<head>
+			<title>API Documentation</title>
+			<style>
+				body { font-family: Arial, sans-serif; margin: 20px; }
+				.table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+				.table th, .table td { padding: 8px; border: 1px solid #ddd; }
+				.table th { background-color: #f5f5f5; }
+				.method-get { color: #2196F3; }
+				.method-post { color: #4CAF50; }
+				.method-put { color: #FF9800; }
+				.method-delete { color: #F44336; }
+			</style>
+		</head>
+		<body>
+			<h1>API Documentation</h1>`
+
+		for table, doc := range apiDocs {
+			if docMap, ok := doc.(map[string]interface{}); ok {
+				html += fmt.Sprintf("<h2>%s (%s)</h2>", docMap["model_name"], table)
+				if desc, ok := docMap["description"].(string); ok && desc != "" {
+					html += fmt.Sprintf("<p>%s</p>", desc)
+				}
+
+				html += `<table class="table">
+					<tr>
+						<th>Type</th>
+						<th>Method</th>
+						<th>Path</th>
+						<th>Fields</th>
+						<th>Description</th>
+					</tr>`
+
+				if apis, ok := docMap["apis"].(map[string]interface{}); ok {
+					for _, api := range apis {
+						if apiInfo, ok := api.(map[string]interface{}); ok {
+							method := apiInfo["method"].(string)
+							methodClass := fmt.Sprintf("method-%s", strings.ToLower(method))
+							fields := ""
+							if apiInfo["fields"] != nil {
+								if fieldSlice, ok := apiInfo["fields"].([]string); ok {
+									fields = strings.Join(fieldSlice, ", ")
+								}
+							}
+							html += fmt.Sprintf(`
+								<tr>
+									<td>%s</td>
+									<td class="%s">%s</td>
+									<td>%s</td>
+									<td>%s</td>
+									<td>%s</td>
+								</tr>`,
+								apiInfo["type"],
+								methodClass,
+								method,
+								apiInfo["path"],
+								fields,
+								apiInfo["description"])
+						}
+					}
+				}
+				html += "</table>"
+			}
+		}
+
+		html += "</body></html>"
+
+		c.Header("Content-Type", "text/html")
+		c.String(http.StatusOK, html)
+	})
+}
+
+// 用于存储所有注册的 Crud 实例
+var registeredCruds []*Crud
+
+// RegisterCrud 注册一个 Crud 实例
+func RegisterCrud(crud *Crud) {
+	registeredCruds = append(registeredCruds, crud)
+}
+
+// NewHandler 创建新的处理器
+func NewHandler(path string, method string) *ItemHandler {
+	return &ItemHandler{
+		Path:       path,
+		Method:     method,
+		processors: make(map[string]map[string][]ProcessorFunc),
+	}
+}
+
+// GetHandlers 返回 Gin 处理器列表
+func (h *ItemHandler) GetHandlers() []gin.HandlerFunc {
+	handlers := make([]gin.HandlerFunc, 0)
+	handlers = append(handlers, h.HandleRequest)
+	return handlers
 }

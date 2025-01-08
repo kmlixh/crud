@@ -8,9 +8,10 @@ import (
 
 // 预定义响应码
 const (
-	CodeSuccess = 200 // 成功
-	CodeError   = 500 // 服务器错误
-	CodeInvalid = 400 // 请求无效
+	CodeSuccess  = 200 // 成功
+	CodeError    = 500 // 服务器错误
+	CodeInvalid  = 400 // 请求无效
+	CodeNotFound = 404 // 记录不存在
 )
 
 // 预定义消息
@@ -28,21 +29,30 @@ type CodeMsg struct {
 
 // JsonOk 返回成功响应
 func JsonOk(c *gin.Context, data interface{}) {
+	if _, exists := c.Get("response_sent"); exists {
+		return
+	}
 	c.JSON(http.StatusOK, CodeMsg{
 		Code:    CodeSuccess,
 		Message: MsgSuccess,
 		Data:    data,
 	})
+	c.Set("response_sent", true)
 }
 
 // JsonErr 返回错误响应
 func JsonErr(c *gin.Context, code int, message string) {
+	if _, exists := c.Get("response_sent"); exists {
+		return
+	}
 	var httpStatus int
 	switch code {
 	case CodeInvalid:
 		httpStatus = http.StatusBadRequest
 	case CodeError:
 		httpStatus = http.StatusInternalServerError
+	case CodeNotFound:
+		httpStatus = http.StatusNotFound
 	default:
 		httpStatus = http.StatusInternalServerError
 	}
@@ -50,6 +60,7 @@ func JsonErr(c *gin.Context, code int, message string) {
 		Code:    code,
 		Message: message,
 	})
+	c.Set("response_sent", true)
 }
 
 // Json 直接返回对象
@@ -77,18 +88,25 @@ func CodeMsgFunc(c *gin.Context, code int, message string, data interface{}) {
 	})
 }
 
+var AllowList = make(map[string]bool)
+
 // Cors 跨域中间件
 func Cors() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		c.Header("Access-Control-Max-Age", "86400")
-
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
+		origin := c.Request.Header.Get("Origin")
+		result, ok := AllowList[origin]
+		if ok && result {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Access-Control-Allow-Headers", "Content-Type, AccessToken, X-CSRF-Token, Authorization, Token,token,target,code")
+			c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+			c.Header("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Content-Type")
+			c.Header("Access-Control-Allow-Credentials", "true")
 		}
+		method := c.Request.Method
+		if method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+		}
+		// 允许放行OPTIONS请求
 
 		c.Next()
 	}
