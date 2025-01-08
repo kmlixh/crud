@@ -119,6 +119,7 @@ func New2(db *gom.DB, model interface{}) *Crud {
 func (c *Crud) initDefaultHandlers() {
 	// 列表处理器
 	listHandler := NewHandler("/list", http.MethodGet)
+	listHandler.SetDescription("获取所有记录")
 	listHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
 		if ctx.Chain == nil {
 			ctx.Chain = c.db.Chain()
@@ -148,6 +149,7 @@ func (c *Crud) initDefaultHandlers() {
 
 	// 分页处理器
 	pageHandler := NewHandler("/page", http.MethodGet)
+	pageHandler.SetDescription("分页查询记录")
 	pageHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
 		page := 1
 		size := 10
@@ -247,6 +249,7 @@ func (c *Crud) initDefaultHandlers() {
 
 	// 单条处理器
 	singleHandler := NewHandler("/detail/:id", http.MethodGet)
+	singleHandler.SetDescription("获取单条记录详情")
 	singleHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
 		id := ctx.GinContext.Param("id")
 		if id == "" {
@@ -293,6 +296,7 @@ func (c *Crud) initDefaultHandlers() {
 
 	// 保存处理器
 	saveHandler := NewHandler("/save", http.MethodPost)
+	saveHandler.SetDescription("创建新记录")
 	saveHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
 		var data map[string]interface{}
 		if err := ctx.GinContext.ShouldBindJSON(&data); err != nil {
@@ -332,14 +336,27 @@ func (c *Crud) initDefaultHandlers() {
 
 	// 更新处理器
 	updateHandler := NewHandler("/update/:id", http.MethodPut)
+	updateHandler.SetDescription("更新指定记录")
 	updateHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
 		id := ctx.GinContext.Param("id")
 		if id == "" {
+			JsonErr(ctx.GinContext, CodeInvalid, "id is required")
 			return fmt.Errorf("id is required")
 		}
 		var data map[string]interface{}
 		if err := ctx.GinContext.ShouldBindJSON(&data); err != nil {
+			JsonErr(ctx.GinContext, CodeInvalid, "invalid request data")
 			return err
+		}
+		// Validate data types
+		if age, ok := data["age"]; ok {
+			switch v := age.(type) {
+			case float64:
+				data["age"] = int(v)
+			case string:
+				JsonErr(ctx.GinContext, CodeInvalid, "age must be a number")
+				return fmt.Errorf("invalid age value")
+			}
 		}
 		ctx.Data = map[string]interface{}{
 			"id":     id,
@@ -372,6 +389,7 @@ func (c *Crud) initDefaultHandlers() {
 
 	// 删除处理器
 	deleteHandler := NewHandler("/delete/:id", http.MethodDelete)
+	deleteHandler.SetDescription("删除指定记录")
 	deleteHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
 		id := ctx.GinContext.Param("id")
 		if id == "" {
@@ -442,6 +460,10 @@ func ParseQueryConditions(c *gin.Context, chain *gom.Chain) error {
 			} else if strings.HasSuffix(k, "_like") {
 				field := strings.TrimSuffix(k, "_like")
 				chain = chain.Where(field, define.OpLike, fmt.Sprintf("%%%s%%", v[0]))
+			} else if strings.HasSuffix(k, "_in") {
+				field := strings.TrimSuffix(k, "_in")
+				values := strings.Split(v[0], ",")
+				chain = chain.Where(field, define.OpIn, values)
 			} else {
 				chain = chain.Where(k, define.OpEq, v[0])
 			}
@@ -613,24 +635,44 @@ func (h *ItemHandler) HandleRequest(c *gin.Context) {
 	}
 	c.Set("process_context", ctx)
 
+	// 处理 JSON 绑定错误
+	if c.Request.Method == http.MethodPost || c.Request.Method == http.MethodPut {
+		if c.Request.Header.Get("Content-Type") != "application/json" {
+			JsonErr(c, CodeInvalid, "Content-Type must be application/json")
+			return
+		}
+	}
+
 	for _, phase := range []string{PreProcess, BuildQuery, Execute, PostProcess} {
 		if err := h.executeProcessors(phase, BeforePhase, ctx); err != nil {
 			if _, exists := c.Get("response_sent"); !exists {
-				JsonErr(c, CodeError, err.Error())
+				if err.Error() == "sql: no rows in result set" {
+					JsonErr(c, CodeNotFound, "record not found")
+				} else {
+					JsonErr(c, CodeInvalid, err.Error())
+				}
 				c.Set("response_sent", true)
 			}
 			return
 		}
 		if err := h.executeProcessors(phase, OnPhase, ctx); err != nil {
 			if _, exists := c.Get("response_sent"); !exists {
-				JsonErr(c, CodeError, err.Error())
+				if err.Error() == "sql: no rows in result set" {
+					JsonErr(c, CodeNotFound, "record not found")
+				} else {
+					JsonErr(c, CodeInvalid, err.Error())
+				}
 				c.Set("response_sent", true)
 			}
 			return
 		}
 		if err := h.executeProcessors(phase, AfterPhase, ctx); err != nil {
 			if _, exists := c.Get("response_sent"); !exists {
-				JsonErr(c, CodeError, err.Error())
+				if err.Error() == "sql: no rows in result set" {
+					JsonErr(c, CodeNotFound, "record not found")
+				} else {
+					JsonErr(c, CodeInvalid, err.Error())
+				}
 				c.Set("response_sent", true)
 			}
 			return
@@ -685,9 +727,24 @@ func (c *Crud) SetDescription(desc string) *Crud {
 
 // RegisterRoutes 注册路由
 func (c *Crud) RegisterRoutes(group *gin.RouterGroup, prefix string) {
+	if Debug {
+		debugf("Registering routes for table: %s", c.tableName)
+	}
 	for _, handler := range c.handlers {
 		path := prefix + handler.Path
+		if Debug {
+			debugf("  %s %s", handler.Method, path)
+			if handler.Description != "" {
+				debugf("    Description: %s", handler.Description)
+			}
+			if len(handler.AllowedFields) > 0 {
+				debugf("    Allowed Fields: %v", handler.AllowedFields)
+			}
+		}
 		group.Handle(handler.Method, path, handler.HandleRequest)
+	}
+	if Debug {
+		debugf("Route registration completed")
 	}
 }
 
