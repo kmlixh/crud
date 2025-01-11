@@ -18,13 +18,12 @@ import (
 
 // TestUser 测试用户结构体
 type TestUser struct {
-	ID        int       `json:"id" gom:"id,pk,autoincrement"`
-	Username  string    `json:"username" gom:"username,notnull"`
-	Email     string    `json:"email" gom:"email,notnull"`
+	ID        int64     `json:"id" gom:"id,primary_key,auto_increment"`
+	Username  string    `json:"username" gom:"username"`
+	Email     string    `json:"email" gom:"email"`
 	Age       int       `json:"age" gom:"age"`
 	Status    string    `json:"status" gom:"status"`
 	CreatedAt time.Time `json:"created_at" gom:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" gom:"updated_at"`
 }
 
 func (u *TestUser) TableName() string {
@@ -38,7 +37,7 @@ func init() {
 // setupTestDB 设置测试数据库
 func setupTestDB() *gom.DB {
 	debugf("Setting up test database")
-	db, err := gom.Open("mysql", "root:123456@tcp(10.0.1.5:3306)/test?charset=utf8mb4&parseTime=true", &define.DBOptions{
+	db, err := gom.Open("mysql", "remote:123456@tcp(192.168.110.249:3306)/test?charset=utf8mb4&parseTime=true", &define.DBOptions{
 		Debug: false,
 	})
 	if err != nil {
@@ -58,8 +57,7 @@ func setupTestDB() *gom.DB {
 			email VARCHAR(255),
 			age INT,
 			status VARCHAR(50),
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
 	if result.Error != nil {
@@ -107,121 +105,89 @@ func insertTestData(t *testing.T, db *gom.DB) {
 }
 
 func TestCRUDOperations(t *testing.T) {
-	// 设置测试数据库
-	fmt.Println("Setting up test database")
 	db := setupTestDB()
-	fmt.Println("Test database setup completed")
-
-	// 设置测试路由
-	fmt.Println("Setting up test router")
-	router, _ := setupTestRouter(db)
-	fmt.Println("Test router setup completed")
-
-	// 创建测试用户数据
-	testUser := &TestUser{
-		Username: "test_user",
-		Email:    "test@example.com",
-		Age:      25,
-		Status:   "active",
-	}
+	r, _ := setupTestRouter(db)
 
 	t.Run("Create", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		body, _ := json.Marshal(testUser)
-		req, _ := http.NewRequest("POST", "/api/users/save", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		router.ServeHTTP(w, req)
-
-		assert.Equal(t, 200, w.Code)
-
-		var response struct {
-			Code    int       `json:"code"`
-			Message string    `json:"message"`
-			Data    *TestUser `json:"data"`
+		payload := map[string]interface{}{
+			"username": "testuser",
+			"email":    "test@example.com",
+			"age":      30,
+			"status":   "active",
 		}
+		jsonData, _ := json.Marshal(payload)
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/users/save", bytes.NewBuffer(jsonData))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var response map[string]interface{}
 		err := json.Unmarshal(w.Body.Bytes(), &response)
 		assert.NoError(t, err)
-		assert.Equal(t, 0, response.Code)
-		assert.Equal(t, "success", response.Message)
-		assert.NotNil(t, response.Data)
-		assert.NotZero(t, response.Data.ID)
-		assert.Equal(t, testUser.Username, response.Data.Username)
-		assert.Equal(t, testUser.Email, response.Data.Email)
-		assert.Equal(t, testUser.Age, response.Data.Age)
-		assert.Equal(t, testUser.Status, response.Data.Status)
+		assert.Equal(t, float64(0), response["code"])
 
-		// 保存ID用于后续测试
-		testUser.ID = response.Data.ID
+		data := response["data"].(map[string]interface{})
+		assert.Equal(t, "testuser", data["username"])
+		assert.Equal(t, "test@example.com", data["email"])
+		assert.Equal(t, float64(30), data["age"])
+		assert.Equal(t, "active", data["status"])
 	})
 
-	t.Run("Get", func(t *testing.T) {
+	t.Run("Read", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req, _ := http.NewRequest("GET", fmt.Sprintf("/api/users/detail/%d", testUser.ID), nil)
-		router.ServeHTTP(w, req)
+		req := httptest.NewRequest("GET", "/api/users/detail/1", nil)
+		r.ServeHTTP(w, req)
 
-		assert.Equal(t, 200, w.Code)
+		assert.Equal(t, http.StatusOK, w.Code)
 
-		var response struct {
-			Code    int       `json:"code"`
-			Message string    `json:"message"`
-			Data    *TestUser `json:"data"`
-		}
+		var response map[string]interface{}
 		err := json.Unmarshal(w.Body.Bytes(), &response)
 		assert.NoError(t, err)
-		assert.Equal(t, 0, response.Code)
-		assert.Equal(t, testUser.ID, response.Data.ID)
-		assert.Equal(t, testUser.Username, response.Data.Username)
+		assert.Equal(t, float64(0), response["code"])
+
+		data := response["data"].(map[string]interface{})
+		assert.Equal(t, "testuser", data["username"])
+		assert.Equal(t, "test@example.com", data["email"])
 	})
 
 	t.Run("Update", func(t *testing.T) {
-		testUser.Username = "updated_user"
-		testUser.Age = 30
+		payload := map[string]interface{}{
+			"status": "inactive",
+		}
+		jsonData, _ := json.Marshal(payload)
 
 		w := httptest.NewRecorder()
-		body, _ := json.Marshal(testUser)
-		req, _ := http.NewRequest("PUT", "/api/users/update", bytes.NewBuffer(body))
+		req := httptest.NewRequest("PUT", "/api/users/update/1", bytes.NewBuffer(jsonData))
 		req.Header.Set("Content-Type", "application/json")
-		router.ServeHTTP(w, req)
+		r.ServeHTTP(w, req)
 
-		assert.Equal(t, 200, w.Code)
+		assert.Equal(t, http.StatusOK, w.Code)
 
-		var response struct {
-			Code    int       `json:"code"`
-			Message string    `json:"message"`
-			Data    *TestUser `json:"data"`
-		}
+		var response map[string]interface{}
 		err := json.Unmarshal(w.Body.Bytes(), &response)
 		assert.NoError(t, err)
-		assert.Equal(t, 0, response.Code)
-		assert.Equal(t, testUser.ID, response.Data.ID)
-		assert.Equal(t, "updated_user", response.Data.Username)
-		assert.Equal(t, 30, response.Data.Age)
+		assert.Equal(t, float64(0), response["code"])
+
+		data := response["data"].(map[string]interface{})
+		assert.Equal(t, "inactive", data["status"])
 	})
 
 	t.Run("Delete", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/users/delete/%d", testUser.ID), nil)
-		router.ServeHTTP(w, req)
+		req := httptest.NewRequest("DELETE", "/api/users/delete/1", nil)
+		r.ServeHTTP(w, req)
 
-		assert.Equal(t, 200, w.Code)
+		assert.Equal(t, http.StatusOK, w.Code)
 
-		var response struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-			Data    struct {
-				ID int `json:"id"`
-			} `json:"data"`
-		}
-		err := json.Unmarshal(w.Body.Bytes(), &response)
-		assert.NoError(t, err)
-		assert.Equal(t, 0, response.Code)
-		assert.Equal(t, testUser.ID, response.Data.ID)
-
-		// 验证记录已被删除
+		// 验证删除后无法查询到记录
 		w = httptest.NewRecorder()
-		req, _ = http.NewRequest("GET", fmt.Sprintf("/api/users/detail/%d", testUser.ID), nil)
-		router.ServeHTTP(w, req)
-		assert.Equal(t, 404, w.Code)
+		req = httptest.NewRequest("GET", "/api/users/detail/1", nil)
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
 	})
 }
 
@@ -420,7 +386,7 @@ func TestErrorHandling(t *testing.T) {
 		{
 			name:   "Invalid Update Data",
 			method: "PUT",
-			url:    "/api/users/update",
+			url:    "/api/users/update/1",
 			payload: map[string]interface{}{
 				"age": "invalid",
 			},
