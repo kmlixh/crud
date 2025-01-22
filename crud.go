@@ -271,6 +271,7 @@ func (c *Crud) initDefaultHandlers() {
 		result := ctx.Chain.First()
 		if result.Error != nil {
 			if result.Error.Error() == "sql: no rows in result set" {
+				ctx.Data["result"] = nil
 				JsonErr(ctx.GinContext, CodeNotFound, "record not found")
 				ctx.GinContext.Abort()
 				return nil
@@ -278,6 +279,7 @@ func (c *Crud) initDefaultHandlers() {
 			return result.Error
 		}
 		if len(result.Data) == 0 {
+			ctx.Data["result"] = nil
 			JsonErr(ctx.GinContext, CodeNotFound, "record not found")
 			ctx.GinContext.Abort()
 			return nil
@@ -286,10 +288,15 @@ func (c *Crud) initDefaultHandlers() {
 		return nil
 	})
 	singleHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {
+		if ctx.Data["result"] == nil {
+			return nil
+		}
 		if result, ok := ctx.Data["result"].(map[string]interface{}); ok {
 			ctx.Data["result"] = result
+			JsonOk(ctx.GinContext, result)
+		} else {
+			JsonErr(ctx.GinContext, CodeInternalError, "invalid result format")
 		}
-		JsonOk(ctx.GinContext, ctx.Data["result"])
 		return nil
 	})
 	c.AddHandler(SINGLE, http.MethodGet, singleHandler)
@@ -298,34 +305,56 @@ func (c *Crud) initDefaultHandlers() {
 	saveHandler := NewHandler("/save", http.MethodPost)
 	saveHandler.SetDescription("创建新记录")
 	saveHandler.AddProcessor(PreProcess, OnPhase, func(ctx *ProcessContext) error {
-		var data map[string]interface{}
-		if err := ctx.GinContext.ShouldBindJSON(&data); err != nil {
+		t := reflect.TypeOf(c.model)
+		if t.Kind() != reflect.Ptr {
+			t = t.Elem()
+		}
+		v := reflect.Indirect(reflect.New(t)).Interface()
+		if err := ctx.GinContext.ShouldBindJSON(&v); err != nil {
+			JsonErr(ctx.GinContext, CodeInvalid, "invalid request data")
 			return err
 		}
 		ctx.Data = map[string]interface{}{
-			"values": data,
+			"values": v,
 		}
 		return nil
 	})
 	saveHandler.AddProcessor(Execute, OnPhase, func(ctx *ProcessContext) error {
 		values, ok := ctx.Data["values"].(map[string]interface{})
 		if !ok {
+			JsonErr(ctx.GinContext, CodeInvalid, "invalid values")
 			return fmt.Errorf("invalid values")
 		}
+
 		result := c.db.Chain().Table(c.tableName).Values(values).Save()
 		if result.Error != nil {
+			if strings.Contains(result.Error.Error(), "Duplicate entry") {
+				JsonErr(ctx.GinContext, CodeConflict, "domain with same name or identifier already exists")
+				return nil
+			}
+			JsonErr(ctx.GinContext, CodeInternalError, result.Error.Error())
 			return result.Error
 		}
+
 		id, err := result.LastInsertId()
 		if err != nil {
+			JsonErr(ctx.GinContext, CodeInternalError, err.Error())
 			return err
 		}
+
 		// 查询新创建的记录
 		queryResult := c.db.Chain().Table(c.tableName).Eq("id", id).First()
 		if queryResult.Error != nil {
+			JsonErr(ctx.GinContext, CodeInternalError, queryResult.Error.Error())
 			return queryResult.Error
 		}
-		ctx.Data["result"] = queryResult.Data[0]
+
+		// Map identifier back to domainName in response
+		data := queryResult.Data[0]
+		data["domainName"] = data["identifier"]
+		delete(data, "identifier")
+
+		ctx.Data["result"] = data
 		return nil
 	})
 	saveHandler.AddProcessor(PostProcess, OnPhase, func(ctx *ProcessContext) error {

@@ -22,25 +22,12 @@ type Domain struct {
 	Description  string    `json:"description" gom:"description"`
 	ServiceCount int       `json:"serviceCount" gom:"service_count,default"`
 	Status       int       `json:"status" gom:"status,notnull,default"`
-	Services     []Service `json:"services" gom:"services,m2m:domain_services"`
 	CreatedAt    time.Time `json:"createdAt" gom:"created_at,notnull,default"`
 	UpdatedAt    time.Time `json:"updatedAt" gom:"updated_at,notnull,default"`
 }
 
-type Service struct {
-	ID          uint      `json:"id" gom:"id,@,auto"`
-	Name        string    `json:"name" gom:"name,notnull"`
-	Description string    `json:"description" gom:"description"`
-	CreatedAt   time.Time `json:"createdAt" gom:"created_at,notnull,default"`
-	UpdatedAt   time.Time `json:"updatedAt" gom:"updated_at,notnull,default"`
-}
-
 func (d *Domain) TableName() string {
 	return "domains"
-}
-
-func (s *Service) TableName() string {
-	return "services"
 }
 
 func initTestDB() *gom.DB {
@@ -50,7 +37,7 @@ func initTestDB() *gom.DB {
 		Debug:        true,
 	}
 	// 使用 MySQL 测试数据库
-	db, err := gom.Open("mysql", "root:123456@tcp(10.0.1.5:3306)/test?parseTime=true", opts)
+	db, err := gom.Open("mysql", "root:123456@tcp(192.168.110.249:3306)/test?parseTime=true", opts)
 	if err != nil {
 		panic(err)
 	}
@@ -176,7 +163,6 @@ func TestDomainCRUD(t *testing.T) {
 			"description":  "Test Description",
 			"serviceCount": 0,
 			"status":       1,
-			"services":     []interface{}{},
 		}
 		jsonData, err := json.Marshal(payload)
 		assert.NoError(t, err)

@@ -8,10 +8,13 @@ import (
 
 // 预定义响应码
 const (
-	CodeSuccess  = 200 // 成功
-	CodeError    = 500 // 服务器错误
-	CodeInvalid  = 400 // 请求无效
-	CodeNotFound = 404 // 记录不存在
+	CodeSuccess       = 0   // 成功
+	CodeInvalid       = 400 // 无效请求
+	CodeUnauthorized  = 401 // 未授权
+	CodeForbidden     = 403 // 禁止访问
+	CodeNotFound      = 404 // 未找到
+	CodeConflict      = 409 // 冲突
+	CodeInternalError = 500 // 内部错误
 )
 
 // 预定义消息
@@ -49,10 +52,16 @@ func JsonErr(c *gin.Context, code int, message string) {
 	switch code {
 	case CodeInvalid:
 		httpStatus = http.StatusBadRequest
-	case CodeError:
-		httpStatus = http.StatusInternalServerError
+	case CodeUnauthorized:
+		httpStatus = http.StatusUnauthorized
+	case CodeForbidden:
+		httpStatus = http.StatusForbidden
 	case CodeNotFound:
 		httpStatus = http.StatusNotFound
+	case CodeConflict:
+		httpStatus = http.StatusConflict
+	case CodeInternalError:
+		httpStatus = http.StatusInternalServerError
 	default:
 		httpStatus = http.StatusInternalServerError
 	}
@@ -76,7 +85,7 @@ func CodeMsgFunc(c *gin.Context, code int, message string, data interface{}) {
 		httpStatus = http.StatusOK
 	case CodeInvalid:
 		httpStatus = http.StatusBadRequest
-	case CodeError:
+	case CodeInternalError:
 		httpStatus = http.StatusInternalServerError
 	default:
 		httpStatus = http.StatusOK

@@ -37,7 +37,7 @@ func init() {
 // setupTestDB 设置测试数据库
 func setupTestDB() *gom.DB {
 	debugf("Setting up test database")
-	db, err := gom.Open("mysql", "remote:123456@tcp(192.168.110.249:3306)/test?charset=utf8mb4&parseTime=true", &define.DBOptions{
+	db, err := gom.Open("mysql", "root:123456@tcp(192.168.110.249:3306)/test?charset=utf8mb4&parseTime=true", &define.DBOptions{
 		Debug: false,
 	})
 	if err != nil {

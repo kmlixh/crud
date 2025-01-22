@@ -60,7 +60,7 @@ func GlobalTokenAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !GlobalCheckTokenGin(c) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code":    CodeError,
+				"code":    CodeUnauthorized,
 				"message": "unauthorized",
 			})
 			return
@@ -219,7 +219,7 @@ func TokenAuthMiddleware(store *RedisTokenStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !store.CheckTokenGin(c) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code":    CodeError,
+				"code":    CodeUnauthorized,
 				"message": "unauthorized",
 			})
 			return
@@ -370,7 +370,7 @@ func GlobalTokenAuthMiddlewareWithType(requiredType string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !GlobalCheckTokenGin(c) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code":    CodeError,
+				"code":    CodeUnauthorized,
 				"message": "unauthorized",
 			})
 			return
@@ -379,7 +379,7 @@ func GlobalTokenAuthMiddlewareWithType(requiredType string) gin.HandlerFunc {
 		userType, _, ok := GetCurrentUser(c)
 		if !ok || userType != requiredType {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"code":    CodeError,
+				"code":    CodeForbidden,
 				"message": "forbidden",
 			})
 			return
