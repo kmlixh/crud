@@ -213,21 +213,6 @@ func SetConditionParamAsCnd(queryParam []ConditionParam) gin.HandlerFunc {
 	}
 }
 
-// DefaultRoutePath represents the default route paths
-type DefaultRoutePath string
-
-const (
-	PathList        DefaultRoutePath = "list"
-	PathAdd         DefaultRoutePath = "add"
-	PathUpdate      DefaultRoutePath = "update"
-	PathDelete      DefaultRoutePath = "delete"
-	PathDetail      DefaultRoutePath = "detail"
-	PathTableStruct DefaultRoutePath = "table_struct"
-)
-
-// DoNothingFunc is a placeholder handler that does nothing
-func DoNothingFunc(c *gin.Context) {}
-
 // RouteHandler represents a route handler configuration
 type RouteHandler struct {
 	Path       string

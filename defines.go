@@ -2,7 +2,6 @@ package crud
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/kmlixh/gom/v4/define"
 )
 
 type DefaultRoutePath string
@@ -40,35 +39,6 @@ type PageInfo struct {
 	TotalPages int64 `json:"totalPages"`
 	Data       any   `json:"data"`
 }
-type HandlerAppendType int
-
-const (
-	Before HandlerAppendType = iota - 1
-	Replace
-	After
-)
-
-type ICrud interface {
-	Register(routes gin.IRoutes, prefix ...string) error
-	AppendHandler(name string, handler gin.HandlerFunc, appendType HandlerAppendType, position HandlerPosition) error
-	AddHandler(routeHandler RouteHandler) error
-}
-type RouteHandler struct {
-	Path       string
-	HttpMethod string
-	Handlers   []gin.HandlerFunc
-}
-type ConditionParam struct {
-	QueryName string
-	ColName   string
-	Operation define.OpType
-}
-type Crud struct {
-	Name     string
-	Handlers []RouteHandler
-	IdxMap   map[string]int
-}
-type HandlerPosition int
 
 const (
 	Db HandlerPosition = iota
