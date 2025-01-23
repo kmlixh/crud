@@ -4,18 +4,25 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/kmlixh/gom/v4"
-	"github.com/kmlixh/gom/v4/define"
-	"net/http"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/gin-gonic/gin"
+	"github.com/kmlixh/gom/v4"
+	"github.com/kmlixh/gom/v4/define"
 )
 
 var prefix = "auto_crud_inject_"
+
+var (
+	primaryKeys  []string
+	primaryAuto  []string
+	columnNames  []string
+	columnIdxMap map[string]string
+)
 
 func ToCamelCaseWithRegex(s string) string {
 	// 正则表达式匹配一个或多个下划线，后面跟一个字母
@@ -206,33 +213,119 @@ func SetConditionParamAsCnd(queryParam []ConditionParam) gin.HandlerFunc {
 	}
 }
 
-func getContextCondition(c *gin.Context) (define.Condition, bool) {
-	i, ok := GetContextAny(c, "cnd")
-	if ok {
-		return i.(define.Condition), ok
+// DefaultRoutePath represents the default route paths
+type DefaultRoutePath string
+
+const (
+	PathList        DefaultRoutePath = "list"
+	PathAdd         DefaultRoutePath = "add"
+	PathUpdate      DefaultRoutePath = "update"
+	PathDelete      DefaultRoutePath = "delete"
+	PathDetail      DefaultRoutePath = "detail"
+	PathTableStruct DefaultRoutePath = "table_struct"
+)
+
+// DoNothingFunc is a placeholder handler that does nothing
+func DoNothingFunc(c *gin.Context) {}
+
+// RouteHandler represents a route handler configuration
+type RouteHandler struct {
+	Path       string
+	HttpMethod string
+	Handlers   []gin.HandlerFunc
+}
+
+// ICrud represents the CRUD interface
+type ICrud interface {
+	Register(routes gin.IRoutes, prefix ...string) error
+	AddHandler(routeHandler RouteHandler) error
+	GetHandler(name string) (RouteHandler, error)
+	DeleteHandler(name string) error
+	AppendHandler(name string, handler gin.HandlerFunc, appendType HandlerAppendType, position HandlerPosition) error
+}
+
+// HandlerAppendType represents how to append a handler
+type HandlerAppendType int
+
+const (
+	Before HandlerAppendType = iota
+	After
+	Replace
+)
+
+// HandlerPosition represents where to append a handler
+type HandlerPosition int
+
+const (
+	BeforeCommit HandlerPosition = iota
+	AfterCommit
+)
+
+// Crud represents the CRUD implementation
+type Crud struct {
+	Name     string
+	Handlers []RouteHandler
+	IdxMap   map[string]int
+}
+
+// ConditionPayload represents a condition's operation type and value
+type ConditionPayload struct {
+	Type  define.OpType
+	Value interface{}
+}
+
+// Condition represents a where condition with multiple payloads
+type Condition struct {
+	PayLoads map[string]ConditionPayload
+}
+
+// ConditionParam represents a condition parameter
+type ConditionParam struct {
+	QueryName string
+	ColName   string
+	Operation define.OpType
+}
+
+func GetRouteHandler2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam) (ICrud, error) {
+	listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols), DefaultGenPageFromRstQuery, DoNothingFunc)
+	detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(detailConditionParam), SetColumns(queryDetailCols), DoNothingFunc, DoNothingFunc)
+	insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(insertCols), DoNothingFunc, DoNothingFunc)
+	updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(updateConditionParam), SetColumns(updateCols), DoNothingFunc, DoNothingFunc)
+	deleteHandler := GetDeleteHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(deleteConditionParam), DoNothingFunc, DoNothingFunc, DoNothingFunc)
+	tableStructHandler := GetTableStructHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc)
+	return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler, tableStructHandler)
+}
+
+func GetQueryListHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathList), "GET", append(beforeCommitFunc, QueryList(), RenderJSON)...)
+}
+
+func GetQuerySingleHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathDetail), "GET", append(beforeCommitFunc, QuerySingle(), RenderJSON)...)
+}
+
+func GetInsertHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathAdd), "POST", append(beforeCommitFunc, DoInsert(), RenderJSON)...)
+}
+
+func GetUpdateHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathUpdate), "POST", append(beforeCommitFunc, DoUpdate(), RenderJSONP)...)
+}
+
+func GetDeleteHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathDelete), "DELETE", append(beforeCommitFunc, DoDelete(), RenderJSON)...)
+}
+
+func GetTableStructHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathTableStruct), "GET", append(beforeCommitFunc, DoTableStruct(), RenderJSONP)...)
+}
+
+func GetRouteHandler(path string, method string, handlers ...gin.HandlerFunc) RouteHandler {
+	return RouteHandler{
+		Path:       path,
+		HttpMethod: method,
+		Handlers:   handlers,
 	}
-	return define.Condition{}, ok
-}
-func SetContextCondition(cnd define.Condition) gin.HandlerFunc {
-	return SetContextAny("cnd", cnd)
-}
-func GetContextDatabase(c *gin.Context) (*gom.DB, bool) {
-	i, ok := GetContextAny(c, "db")
-	if ok {
-		return i.(*gom.DB), ok
-	}
-	return nil, ok
-}
-func SetContextDatabase(db *gom.DB) gin.HandlerFunc {
-	return SetContextAny("db", db)
-}
-func SetContextAny(name string, i any) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Set(prefix+name, i)
-	}
-}
-func GetContextAny(c *gin.Context, name string) (i any, ok bool) {
-	return c.Get(prefix + name)
 }
 
 func (d DefaultRoutePath) String() string {
@@ -338,185 +431,100 @@ func GenHandlerRegister(name string, handlers ...RouteHandler) (ICrud, error) {
 	}, nil
 }
 
-func NewCrud(prefix string, i any, db *gom.DB) (ICrud, error) {
-	tableInfo,er:=db.GetTableStruct2(i)
-	if er!=nil{
-		return nil,er
-	}
-	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
+type CrudDB struct {
+	db        *gom.DB
+	tableName string
+	model     interface{}
+}
 
-	if len(columnNames) > 0 {
-		listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols), DefaultGenPageFromRstQuery, DoNothingFunc)
-		detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(queryCols, columnIdxMap, i)), SetColumns(queryCols), DoNothingFunc, DoNothingFunc)
-		insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(queryCols), DoNothingFunc, DoNothingFunc)
-		updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), SetColumns(append(primaryKeys, columnNames...)), DoNothingFunc, DoNothingFunc)
-		deleteHandler := GetDeleteHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(GetConditionParam(append(primaryKeys, primaryAuto...), columnIdxMap, i)), DoNothingFunc, DoNothingFunc, DoNothingFunc)
-		tableStructHandler := GetTableStructHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc)
-		return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler, tableStructHandler, GetAutoTableViewRouteHandler(TableConfig.String(), db, i))
+func NewCrud(db *gom.DB, tableName string, model interface{}) *CrudDB {
+	return &CrudDB{
+		db:        db,
+		tableName: tableName,
+		model:     model,
+	}
+}
+
+func (c *CrudDB) DoDelete(i interface{}) error {
+	chain := c.db.Chain().Table(c.tableName)
+	if id, ok := i.(int64); ok {
+		chain = chain.Where("id", define.OpEq, id)
 	} else {
-		return nil, errors.New("Struct was empty")
+		chain = chain.From(i)
 	}
-}
-func GetRouteHandler2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam) (ICrud, error) {
-	listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols), DefaultGenPageFromRstQuery, DoNothingFunc)
-	detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(detailConditionParam), SetColumns(queryDetailCols), DoNothingFunc, DoNothingFunc)
-	insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(insertCols), DoNothingFunc, DoNothingFunc)
-	updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(updateConditionParam), SetColumns(updateCols), DoNothingFunc, DoNothingFunc)
-	deleteHandler := GetDeleteHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(deleteConditionParam), DoNothingFunc, DoNothingFunc, DoNothingFunc)
-	tableStructHandler := GetTableStructHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc)
-	return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler, tableStructHandler, GetAutoTableViewRouteHandler(TableConfig.String(), db, i))
-}
-
-func GetConditionParam(columns []string, columnFieldMap map[string]string, i any) []ConditionParam {
-	t := reflect.TypeOf(i)
-	params := make([]ConditionParam, 0)
-	for _, col := range columns {
-		fieldName := columnFieldMap[col]
-		f, ok := t.FieldByName(fieldName)
-		if !ok {
-			panic(errors.New(fmt.Sprintf(" [%s] was not exist! ", fieldName)))
-		}
-		params = append(params, GenDefaultConditionParamByType(col, f))
+	result := chain.Delete()
+	if result.Error != nil {
+		return result.Error
 	}
-	return params
+	return nil
 }
-func GenDefaultConditionParamByType(column string, f reflect.StructField) ConditionParam {
-	return ConditionParam{
-		QueryName: GetFieldDefaultQueryName(f),
-		ColName:   column,
-		Operation: define.Eq,
+
+func (c *CrudDB) DoUpdate(i interface{}) error {
+	chain := c.db.Chain().Table(c.tableName).From(i)
+	result := chain.Save()
+	if result.Error != nil {
+		return result.Error
 	}
-}
-func GetFieldDefaultQueryName(f reflect.StructField) string {
-	return ToCamelCaseWithRegex(f.Name)
+	return nil
 }
 
-func GetQueryListHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathList), "Any", append(beforeCommitFunc, QueryList(), RenderJSON)...)
-}
-func GetQuerySingleHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathDetail), http.MethodGet, append(beforeCommitFunc, QuerySingle(), RenderJSON)...)
-}
-func GetInsertHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathAdd), http.MethodPost, append(beforeCommitFunc, DoInsert(), RenderJSON)...)
-}
-func GetUpdateHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathUpdate), http.MethodPost, append(beforeCommitFunc, DoUpdate(), RenderJSONP)...)
-}
-func GetDeleteHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathDelete), http.MethodDelete, append(beforeCommitFunc, DoDelete(), RenderJSON)...)
-}
-func GetTableStructHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathTableStruct), http.MethodDelete, append(beforeCommitFunc, DoTableStruct(), RenderJSONP)...)
-}
-func GetRouteHandler(path string, method string, handlers ...gin.HandlerFunc) RouteHandler {
-	return RouteHandler{
-		Path:       path,
-		HttpMethod: method,
-		Handlers:   handlers,
+func (c *CrudDB) DoInsert(i interface{}) error {
+	chain := c.db.Chain().Table(c.tableName).From(i)
+	result := chain.Save()
+	if result.Error != nil {
+		return result.Error
 	}
+	return nil
 }
 
-func DoTableStruct() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
-
-		}
-		tableStruct, er := db.GetTableStruct2(i)
-		if er != nil {
-			RenderErrs(c, er)
-			return
-		}
-		SetContextEntity(tableStruct)(c)
+func (c *CrudDB) QuerySingle(i interface{}, id int64) error {
+	chain := c.db.Chain().Table(c.tableName).Where("id", define.OpEq, id)
+	result := chain.First()
+	if result.Error != nil {
+		return result.Error
 	}
+	return result.Into(i)
 }
 
-func DoDelete() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-		cnd, ok := getContextCondition(c)
-		if !ok || cnd == nil {
-			RenderErrs(c, errors.New("can't get Cnd"))
-			return
-		}
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
+func (c *CrudDB) QueryList(i interface{}, page, size int, sort string) (int64, error) {
+	chain := c.db.Chain().Table(c.tableName)
 
+	// Apply sorting
+	if sort != "" {
+		if strings.HasPrefix(sort, "-") {
+			chain = chain.OrderByDesc(strings.TrimPrefix(sort, "-"))
+		} else {
+			chain = chain.OrderBy(sort)
 		}
-		rs, er := db.Where(cnd).Delete(i)
-		if er != nil {
-			RenderErrs(c, er)
-			return
-		}
-		SetContextEntity(rs)(c)
 	}
-}
-func DoUpdate() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-		cnd, ok := getContextCondition(c)
-		if !ok || cnd == nil {
-			RenderErrs(c, errors.New("can't get Cnd"))
-			return
-		}
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
 
-		}
-		cols := make([]string, 0)
-		cc, ok := GetContextAny(c, "cols")
-		if !ok {
-			cols = cc.([]string)
-		}
-		rs, er := db.Where(cnd).Update(i, cols...)
-		if er != nil {
-			RenderErrs(c, er)
-			return
-		}
-		SetContextEntity(rs)(c)
+	// Get total count
+	total, err := chain.Count()
+	if err != nil {
+		return 0, err
 	}
-}
-func DoInsert() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
 
-		}
-		cols := make([]string, 0)
-		cc, ok := GetContextAny(c, "cols")
-		if !ok {
-			cols = cc.([]string)
-		}
-		rs, er := db.Insert(i, cols...)
-		if er != nil {
-			RenderErrs(c, er)
-			return
-		}
-		SetContextEntity(rs)(c)
-
+	// Apply pagination
+	if page > 0 && size > 0 {
+		offset := (page - 1) * size
+		chain = chain.Offset(offset).Limit(size)
 	}
+
+	// Execute query
+	result := chain.List()
+	if result.Error != nil {
+		return 0, result.Error
+	}
+
+	err = result.Into(i)
+	if err != nil {
+		return 0, err
+	}
+
+	return total, nil
 }
-func QuerySingle() gin.HandlerFunc {
+
+func QueryPage() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		db, ok := GetContextDatabase(c)
 		if !ok {
@@ -526,67 +534,124 @@ func QuerySingle() gin.HandlerFunc {
 		if !ok {
 			panic("can't find data entity")
 		}
-		cnd, ok := getContextCondition(c)
-		if ok && cnd != nil {
-			db.Where(cnd)
+
+		// 获取条件
+		cond := buildWhereCondition(c)
+
+		// 获取分页参数
+		page := 1
+		size := 10
+		if p, err := strconv.Atoi(c.DefaultQuery("page", "1")); err == nil {
+			page = p
 		}
-		rawInfo := gom.GetRawTableInfo(i)
-		result := reflect.New(reflect.TypeOf(rawInfo.Type)).Interface()
-		cols := make([]string, 0)
-		cc, ok := GetContextAny(c, "cols")
-		if !ok {
-			cols = cc.([]string)
+		if s, err := strconv.Atoi(c.DefaultQuery("size", "10")); err == nil {
+			size = s
 		}
-		_, er := db.Select(&result, cols...)
-		if er != nil {
-			RenderErrs(c, er)
+
+		// 获取排序参数
+		sort := c.DefaultQuery("sort", "")
+
+		// 构建查询
+		chain := db.Chain().Table(getTableName(i))
+		if cond != nil {
+			chain = chain.Where(cond.Field, cond.Op, cond.Value)
+		}
+
+		// 应用排序
+		if sort != "" {
+			if strings.HasPrefix(sort, "-") {
+				chain = chain.OrderByDesc(strings.TrimPrefix(sort, "-"))
+			} else {
+				chain = chain.OrderBy(sort)
+			}
+		}
+
+		// 设置分页
+		chain = chain.Page(page, size)
+
+		// 执行查询
+		result := chain.List()
+		if result.Error != nil {
+			RenderErrs(c, result.Error)
 			return
 		}
-		SetContextEntity(result)(c)
+
+		// 获取总数
+		total, err := chain.Count()
+		if err != nil {
+			RenderErrs(c, err)
+			return
+		}
+
+		// 返回分页结果
+		pageResult := gin.H{
+			"total": total,
+			"page":  page,
+			"size":  size,
+			"data":  result.Data,
+		}
+		SetContextEntity(pageResult)(c)
 	}
 }
-func QueryList() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
-		}
-		results := reflect.Indirect(reflect.New(reflect.SliceOf(getType(i))))
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-		chain := db.Chain()
-		cnd, ok := getContextCondition(c)
-		if ok && cnd != nil {
-			chain.Where2(cnd)
-		}
-		counts, er := db.Table(rawInfo.TableName).Count("*")
-		pageNum := int64(getContextPageNumber(c))
-		pageSize := int64(getContextPageSize(c))
-		cols := make([]string, 0)
-		cc, ok := GetContextAny(c, "cols")
-		if !ok {
-			cols = cc.([]string)
-		}
-		db.Page(pageNum, pageSize)
-		orderBys, ok := GetOrderBys(c)
-		if ok {
-			db.OrderBys(orderBys)
-		}
-		_, er = db.Select(results, cols...)
-		if er != nil {
-			c.Abort()
-			RenderErrs(c, er)
-			return
-		}
-		totalPages := counts / pageSize
-		if counts%pageSize > 0 {
-			totalPages++
-		}
-		page := PageInfo{pageNum, pageSize, counts, totalPages, results.Interface()}
-		SetContextEntity(page)(c)
+
+// 辅助函数
+func getTableName(i interface{}) string {
+	if t, ok := i.(interface{ TableName() string }); ok {
+		return t.TableName()
 	}
+	return ""
+}
+
+func getSelectColumns(c *gin.Context) []string {
+	cols := make([]string, 0)
+	if cc, ok := GetContextAny(c, "cols"); ok {
+		cols = cc.([]string)
+	}
+	return cols
+}
+
+func buildWhereCondition(c *gin.Context) *define.Condition {
+	if cnd, ok := getContextCondition(c); ok && cnd != nil {
+		var condition *define.Condition
+		for field, payload := range cnd.PayLoads {
+			var newCond *define.Condition
+			switch payload.Type {
+			case define.OpEq:
+				newCond = define.Eq(field, payload.Value)
+			case define.OpNe:
+				newCond = define.Ne(field, payload.Value)
+			case define.OpGt:
+				newCond = define.Gt(field, payload.Value)
+			case define.OpGe:
+				newCond = define.Ge(field, payload.Value)
+			case define.OpLt:
+				newCond = define.Lt(field, payload.Value)
+			case define.OpLe:
+				newCond = define.Le(field, payload.Value)
+			case define.OpLike:
+				newCond = define.Like(field, payload.Value)
+			case define.OpNotLike:
+				newCond = define.NotLike(field, payload.Value)
+			case define.OpIn:
+				if slice, ok := payload.Value.([]interface{}); ok {
+					newCond = define.In(field, slice...)
+				}
+			case define.OpNotIn:
+				if slice, ok := payload.Value.([]interface{}); ok {
+					newCond = define.NotIn(field, slice...)
+				}
+			}
+			if newCond != nil {
+				if condition == nil {
+					condition = newCond
+				} else {
+					condition = condition.And(newCond)
+				}
+			}
+		}
+		return condition
+	}
+	return nil
 }
 
 func RenderJSON(c *gin.Context) {
@@ -608,14 +673,14 @@ func RenderJSONP(c *gin.Context) {
 
 var Operators = []string{"Eq", "Le", "Lt", "Ge", "Gt", "Like", "LikeLeft", "LikeRight", "In", "NotIn", "NotLike", "NotEq"}
 
-func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (define.Condition, map[string]interface{}, error) {
+func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (*define.Condition, map[string]interface{}, error) {
 	maps, err := GetMapFromRst(c)
 	hasValMap := make(map[string]string)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(maps) > 0 && len(conditionParams) > 0 {
-		var cnd = define.NewCondition()
+		var cnd *define.Condition
 		for _, param := range conditionParams {
 			oldName, hasOldVal := hasValMap[param.QueryName]
 			if hasOldVal {
@@ -625,43 +690,259 @@ func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (defi
 				val, hasVal := maps[param.QueryName+oper]
 				if hasVal {
 					hasValMap[param.ColName] = param.QueryName + oper
+					var newCond *define.Condition
 					switch oper {
 					case "Eq":
-						cnd.Eq(param.ColName, val)
+						newCond = define.Eq(param.ColName, val)
 					case "NotEq":
-						cnd.NotEq(param.ColName, val)
+						newCond = define.Ne(param.ColName, val)
 					case "Le":
-						cnd.Le(param.ColName, val)
+						newCond = define.Le(param.ColName, val)
 					case "Lt":
-						cnd.Lt(param.ColName, val)
+						newCond = define.Lt(param.ColName, val)
 					case "Ge":
-						cnd.Ge(param.ColName, val)
+						newCond = define.Ge(param.ColName, val)
 					case "Gt":
-						cnd.Gt(param.ColName, val)
+						newCond = define.Gt(param.ColName, val)
 					case "Like":
-						cnd.Like(param.ColName, val)
+						newCond = define.Like(param.ColName, val)
 					case "LikeLeft":
-						cnd.LikeIgnoreStart(param.ColName, val)
+						newCond = define.Like(param.ColName, "%"+val.(string))
 					case "LikeRight":
-						cnd.LikeIgnoreEnd(param.ColName, val)
+						newCond = define.Like(param.ColName, val.(string)+"%")
 					case "In":
-						cnd.In(param.ColName, gom.UnZipSlice(val)...)
+						if slice, ok := val.([]interface{}); ok {
+							newCond = define.In(param.ColName, slice...)
+						}
 					case "NotIn":
-						cnd.NotIn(param.ColName, gom.UnZipSlice(val)...)
+						if slice, ok := val.([]interface{}); ok {
+							newCond = define.NotIn(param.ColName, slice...)
+						}
 					case "NotLike":
-						cnd.NotLike(param.ColName, val)
+						newCond = define.NotLike(param.ColName, val)
+					}
+					if newCond != nil {
+						if cnd == nil {
+							cnd = newCond
+						} else {
+							cnd = cnd.And(newCond)
+						}
 					}
 				}
 			}
-
 		}
-		if cnd.PayLoads() > 0 {
+		if cnd != nil {
 			return cnd, maps, nil
 		}
 		return nil, nil, nil
-	} else {
-		return nil, nil, nil
+	}
+	return nil, nil, nil
+}
+
+func DoInsert() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		db, ok := GetContextDatabase(c)
+		if !ok {
+			panic("can't find database")
+		}
+		i, ok := GetContextEntity(c)
+		if !ok {
+			panic("can't find data entity")
+		}
+
+		chain := db.Chain().Table(getTableName(i)).From(i)
+		result := chain.Save()
+		if result.Error != nil {
+			RenderErrs(c, result.Error)
+			return
+		}
+		SetContextEntity(i)(c)
 	}
 }
 
-=
+func DoUpdate() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		db, ok := GetContextDatabase(c)
+		if !ok {
+			panic("can't find database")
+		}
+		i, ok := GetContextEntity(c)
+		if !ok {
+			panic("can't find data entity")
+		}
+
+		chain := db.Chain().Table(getTableName(i)).From(i)
+		result := chain.Save()
+		if result.Error != nil {
+			RenderErrs(c, result.Error)
+			return
+		}
+		SetContextEntity(i)(c)
+	}
+}
+
+func DoDelete() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		db, ok := GetContextDatabase(c)
+		if !ok {
+			panic("can't find database")
+		}
+		i, ok := GetContextEntity(c)
+		if !ok {
+			panic("can't find data entity")
+		}
+
+		chain := db.Chain().Table(getTableName(i)).From(i)
+		result := chain.Delete()
+		if result.Error != nil {
+			RenderErrs(c, result.Error)
+			return
+		}
+		SetContextEntity(i)(c)
+	}
+}
+
+func DoTableStruct() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		db, ok := GetContextDatabase(c)
+		if !ok {
+			panic("can't find database")
+		}
+
+		i, ok := GetContextEntity(c)
+		if !ok {
+			panic("can't find data entity")
+		}
+
+		tableStruct, er := db.GetTableStruct2(i)
+		if er != nil {
+			RenderErrs(c, er)
+			return
+		}
+		SetContextEntity(tableStruct)(c)
+	}
+}
+
+func QueryList() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		db, ok := GetContextDatabase(c)
+		if !ok {
+			panic("can't find database")
+		}
+		i, ok := GetContextEntity(c)
+		if !ok {
+			panic("can't find data entity")
+		}
+
+		// 获取条件
+		cond := buildWhereCondition(c)
+
+		// 获取要查询的字段
+		cols := getSelectColumns(c)
+
+		// 执行查询
+		chain := db.Chain().Table(getTableName(i))
+		if len(cols) > 0 {
+			chain = chain.Fields(cols...)
+		}
+		if cond != nil {
+			chain = chain.Where(cond.Field, cond.Op, cond.Value)
+		}
+
+		result := chain.List()
+		if result.Error != nil {
+			RenderErrs(c, result.Error)
+			return
+		}
+
+		// 创建目标切片类型
+		sliceType := reflect.SliceOf(reflect.TypeOf(i))
+		resultSlice := reflect.New(sliceType).Interface()
+
+		// 将结果转换为目标类型
+		if err := result.Into(resultSlice); err != nil {
+			RenderErrs(c, err)
+			return
+		}
+
+		SetContextEntity(resultSlice)(c)
+	}
+}
+
+func QuerySingle() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		db, ok := GetContextDatabase(c)
+		if !ok {
+			panic("can't find database")
+		}
+		i, ok := GetContextEntity(c)
+		if !ok {
+			panic("can't find data entity")
+		}
+
+		// 获取条件
+		cond := buildWhereCondition(c)
+
+		// 获取要查询的字段
+		cols := getSelectColumns(c)
+
+		// 执行查询
+		chain := db.Chain().Table(getTableName(i))
+		if len(cols) > 0 {
+			chain = chain.Fields(cols...)
+		}
+		if cond != nil {
+			chain = chain.Where(cond.Field, cond.Op, cond.Value)
+		}
+
+		result := chain.First()
+		if result.Error != nil {
+			RenderErrs(c, result.Error)
+			return
+		}
+
+		// 创建目标类型
+		resultObj := reflect.New(reflect.TypeOf(i)).Interface()
+
+		// 将结果转换为目标类型
+		if err := result.Into(resultObj); err != nil {
+			RenderErrs(c, err)
+			return
+		}
+
+		SetContextEntity(resultObj)(c)
+	}
+}
+
+func getContextCondition(c *gin.Context) (*Condition, bool) {
+	i, ok := GetContextAny(c, "cnd")
+	if ok {
+		if cnd, ok := i.(Condition); ok {
+			return &cnd, true
+		}
+	}
+	return nil, false
+}
+
+func SetContextCondition(cnd *Condition) gin.HandlerFunc {
+	return SetContextAny("cnd", cnd)
+}
+
+func GetContextDatabase(c *gin.Context) (*gom.DB, bool) {
+	i, ok := GetContextAny(c, "db")
+	if ok {
+		return i.(*gom.DB), ok
+	}
+	return nil, ok
+}
+func SetContextDatabase(db *gom.DB) gin.HandlerFunc {
+	return SetContextAny("db", db)
+}
+func SetContextAny(name string, i any) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set(prefix+name, i)
+	}
+}
+func GetContextAny(c *gin.Context, name string) (i any, ok bool) {
+	return c.Get(prefix + name)
+}
