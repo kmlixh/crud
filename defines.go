@@ -2,7 +2,7 @@ package crud
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/kmlixh/gom/v3/define"
+	"github.com/kmlixh/gom/v4/define"
 )
 
 type DefaultRoutePath string
@@ -48,8 +48,8 @@ const (
 	After
 )
 
-type IHandlerRegister interface {
-	Register(routes gin.IRoutes) error
+type ICrud interface {
+	Register(routes gin.IRoutes, prefix ...string) error
 	AppendHandler(name string, handler gin.HandlerFunc, appendType HandlerAppendType, position HandlerPosition) error
 	AddHandler(routeHandler RouteHandler) error
 }
@@ -61,9 +61,9 @@ type RouteHandler struct {
 type ConditionParam struct {
 	QueryName string
 	ColName   string
-	Operation define.Operation
+	Operation define.OpType
 }
-type HandlerRegister struct {
+type Crud struct {
 	Name     string
 	Handlers []RouteHandler
 	IdxMap   map[string]int

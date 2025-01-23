@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gin-gonic/gin"
-	"github.com/kmlixh/gom/v3"
-	"github.com/kmlixh/gom/v3/define"
+	"github.com/kmlixh/gom/v4"
+	"github.com/kmlixh/gom/v4/define"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -197,7 +197,7 @@ func SetConditionParamAsCnd(queryParam []ConditionParam) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cnd, _, er := MapToParamCondition(c, queryParam)
 		if er == nil {
-			if cnd != nil {
+			if cnd.Field != "" {
 				c.Set(prefix+"cnd", cnd)
 			}
 		} else {
@@ -211,7 +211,7 @@ func getContextCondition(c *gin.Context) (define.Condition, bool) {
 	if ok {
 		return i.(define.Condition), ok
 	}
-	return nil, ok
+	return define.Condition{}, ok
 }
 func SetContextCondition(cnd define.Condition) gin.HandlerFunc {
 	return SetContextAny("cnd", cnd)
@@ -239,7 +239,7 @@ func (d DefaultRoutePath) String() string {
 	return string(d)
 }
 
-func (h HandlerRegister) AddHandler(routeHandler RouteHandler) error {
+func (h Crud) AddHandler(routeHandler RouteHandler) error {
 	if h.Handlers == nil {
 		h.Handlers = make([]RouteHandler, 0)
 	}
@@ -254,7 +254,7 @@ func (h HandlerRegister) AddHandler(routeHandler RouteHandler) error {
 	}
 	return nil
 }
-func (h HandlerRegister) GetHandler(name string) (RouteHandler, error) {
+func (h Crud) GetHandler(name string) (RouteHandler, error) {
 	idx, ok := h.IdxMap[name]
 	if !ok {
 		return RouteHandler{}, errors.New(fmt.Sprintf("handler [%s] not found", name))
@@ -262,7 +262,7 @@ func (h HandlerRegister) GetHandler(name string) (RouteHandler, error) {
 		return h.Handlers[idx], nil
 	}
 }
-func (h HandlerRegister) DeleteHandler(name string) error {
+func (h Crud) DeleteHandler(name string) error {
 	idx, ok := h.IdxMap[name]
 	if !ok {
 		return errors.New(fmt.Sprintf("handler [%s] not found", name))
@@ -276,7 +276,7 @@ func (h HandlerRegister) DeleteHandler(name string) error {
 		return nil
 	}
 }
-func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, appendType HandlerAppendType, position HandlerPosition) error {
+func (h Crud) AppendHandler(name string, handler gin.HandlerFunc, appendType HandlerAppendType, position HandlerPosition) error {
 	_, ok := h.IdxMap[name]
 	var routeHandler RouteHandler
 	if !ok {
@@ -305,37 +305,44 @@ func (h HandlerRegister) AppendHandler(name string, handler gin.HandlerFunc, app
 	return nil
 }
 
-func (h HandlerRegister) Register(routes gin.IRoutes) error {
+func (h Crud) Register(routes gin.IRoutes, prefix ...string) error {
+	name := h.Name
+	if prefix != nil && len(prefix) == 1 {
+		name = prefix[0]
+	}
 	if h.Handlers == nil || len(h.Handlers) == 0 {
 		return errors.New("route handler could not be empty or nil")
 	}
 	for _, handler := range h.Handlers {
 		if handler.HttpMethod != "Any" {
-			routes.Handle(handler.HttpMethod, h.Name+"/"+handler.Path, handler.Handlers...)
+			routes.Handle(handler.HttpMethod, name+"/"+handler.Path, handler.Handlers...)
 		} else {
-			routes.Any(h.Name+"/"+handler.Path, handler.Handlers...)
+			routes.Any(name+"/"+handler.Path, handler.Handlers...)
 		}
 	}
 	return nil
 }
 
-func GenHandlerRegister(name string, handlers ...RouteHandler) (IHandlerRegister, error) {
+func GenHandlerRegister(name string, handlers ...RouteHandler) (ICrud, error) {
 	if handlers == nil || len(handlers) == 0 {
-		return HandlerRegister{}, errors.New("route handler could not be empty or nil")
+		return Crud{}, errors.New("route handler could not be empty or nil")
 	}
 	handlerIdxMap := make(map[string]int)
 	for i, handler := range handlers {
 		handlerIdxMap[handler.Path] = i
 	}
-	return HandlerRegister{
+	return Crud{
 		Name:     name,
 		Handlers: handlers,
 		IdxMap:   handlerIdxMap,
 	}, nil
 }
 
-func GetAutoRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegister, error) {
-	columnNames, primaryKeys, primaryAuto, columnIdxMap := gom.GetColumns(reflect.ValueOf(i))
+func NewCrud(prefix string, i any, db *gom.DB) (ICrud, error) {
+	tableInfo,er:=db.GetTableStruct2(i)
+	if er!=nil{
+		return nil,er
+	}
 	queryCols := append(primaryKeys, append(primaryAuto, columnNames...)...)
 
 	if len(columnNames) > 0 {
@@ -350,7 +357,7 @@ func GetAutoRouteHandler(prefix string, i any, db *gom.DB) (IHandlerRegister, er
 		return nil, errors.New("Struct was empty")
 	}
 }
-func GetRouteHandler2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam) (IHandlerRegister, error) {
+func GetRouteHandler2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam) (ICrud, error) {
 	listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols), DefaultGenPageFromRstQuery, DoNothingFunc)
 	detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(detailConditionParam), SetColumns(queryDetailCols), DoNothingFunc, DoNothingFunc)
 	insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(insertCols), DoNothingFunc, DoNothingFunc)
@@ -544,15 +551,15 @@ func QueryList() gin.HandlerFunc {
 		if !ok {
 			panic("can't find data entity")
 		}
-		rawInfo := gom.GetRawTableInfo(i)
-		results := reflect.Indirect(reflect.New(reflect.SliceOf(rawInfo.Type)))
+		results := reflect.Indirect(reflect.New(reflect.SliceOf(getType(i))))
 		db, ok := GetContextDatabase(c)
 		if !ok {
 			panic("can't find database")
 		}
+		chain := db.Chain()
 		cnd, ok := getContextCondition(c)
 		if ok && cnd != nil {
-			db.Where(cnd)
+			chain.Where2(cnd)
 		}
 		counts, er := db.Table(rawInfo.TableName).Count("*")
 		pageNum := int64(getContextPageNumber(c))
@@ -608,7 +615,7 @@ func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (defi
 		return nil, nil, err
 	}
 	if len(maps) > 0 && len(conditionParams) > 0 {
-		var cnd = gom.CndEmpty()
+		var cnd = define.NewCondition()
 		for _, param := range conditionParams {
 			oldName, hasOldVal := hasValMap[param.QueryName]
 			if hasOldVal {
@@ -657,57 +664,4 @@ func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (defi
 	}
 }
 
-func AutoTableViewHandler(name string, db *gom.DB, i any) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tableInfo, e := GetDefaultTableInfo(name, db, i)
-		if e != nil {
-			c.Abort()
-			RenderErrs(c, e)
-			return
-		}
-		SetContextEntity(tableInfo)(c)
-	}
-}
-func GetDefaultTableInfo(name string, db *gom.DB, i any) (TableInfo, error) {
-	v := reflect.ValueOf(i)
-	_, _, _, columnIdxMap := gom.GetColumns(v)
-	tableStruct, e := db.GetTableStruct2(i)
-	if e != nil {
-		return TableInfo{}, e
-	}
-	tableCols := tableStruct.(define.TableStruct).Columns
-	cols := make([]ColumnInfo, 0)
-	for _, cc := range tableCols {
-		if fieldName, ok := columnIdxMap[cc.ColumnName]; ok {
-			col := ColumnInfo{
-				Name:          cc.ColumnName,
-				Title:         cc.Comment,
-				DateType:      fieldName,
-				Constraint:    Constraint{},
-				Options:       nil,
-				ColumnVisible: true,
-				Searchable:    false,
-				Editable:      cc.PrimaryAuto || cc.Primary,
-			}
-			cols = append(cols, col)
-		} else {
-			return TableInfo{}, errors.New("[" + cc.ColumnName + "] can't found In [" + v.Type().Name() + "]")
-		}
-	}
-	tableInfo := TableInfo{
-		Name:    name,
-		Title:   tableStruct.GetTableComment(),
-		Columns: cols,
-	}
-	return tableInfo, nil
-}
-func GetAutoTableViewRouteHandler(name string, db *gom.DB, i any) RouteHandler {
-	return GetRouteHandler(name, "any", AutoTableViewHandler(name, db, i), func(c *gin.Context) {
-		method := c.Request.Method
-		if method == "JSONP" {
-			RenderJSONP(c)
-		} else {
-			RenderJSON(c)
-		}
-	})
-}
+=
