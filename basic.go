@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -70,7 +71,22 @@ func RenderJson(c *gin.Context, data interface{}) {
 	c.JSON(200, data)
 }
 func RenderOk(c *gin.Context, data ...interface{}) {
-	c.JSON(200, Ok(data...))
+	var result CodeMsg
+	if len(data) == 1 {
+		// 处理单个数据的情况
+		if v := reflect.ValueOf(data[0]); v.Kind() == reflect.Ptr && !v.IsNil() {
+			result = Ok(v.Elem().Interface())
+		} else {
+			result = Ok(data[0])
+		}
+	} else if len(data) > 1 {
+		result = Ok(data)
+	} else {
+		result = Ok(nil)
+	}
+	// 设置状态码和响应
+	c.Status(200)
+	c.JSON(200, result)
 }
 func RenderErr(c *gin.Context) {
 	c.JSON(200, Err())

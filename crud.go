@@ -128,9 +128,10 @@ func getContextPageSize(c *gin.Context) int {
 
 func DefaultUnMarshFunc(i any) gin.HandlerFunc {
 	return func(context *gin.Context) {
-		err := context.ShouldBind(i)
+		err := context.ShouldBindJSON(i)
 		if err != nil {
 			context.Abort()
+			RenderErrs(context, err)
 			return
 		}
 		context.Set(prefix+"entity", i)
@@ -203,12 +204,13 @@ func SetColumns(columns []string) gin.HandlerFunc {
 func SetConditionParamAsCnd(queryParam []ConditionParam) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cnd, _, er := MapToParamCondition(c, queryParam)
-		if er == nil {
-			if cnd.Field != "" {
-				c.Set(prefix+"cnd", cnd)
-			}
-		} else {
+		if er != nil {
 			c.Abort()
+			RenderErrs(c, er)
+			return
+		}
+		if cnd != nil && cnd.Field != "" {
+			c.Set(prefix+"cnd", cnd)
 		}
 	}
 }
@@ -294,15 +296,15 @@ func GetInsertHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
 }
 
 func GetUpdateHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathUpdate), "POST", append(beforeCommitFunc, DoUpdate(), RenderJSONP)...)
+	return GetRouteHandler(string(PathUpdate), "POST", append(beforeCommitFunc, DoUpdate(), RenderJSON)...)
 }
 
 func GetDeleteHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathDelete), "DELETE", append(beforeCommitFunc, DoDelete(), RenderJSON)...)
+	return GetRouteHandler(string(PathDelete), "POST", append(beforeCommitFunc, DoDelete(), RenderJSON)...)
 }
 
 func GetTableStructHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathTableStruct), "GET", append(beforeCommitFunc, DoTableStruct(), RenderJSONP)...)
+	return GetRouteHandler(string(PathTableStruct), "GET", append(beforeCommitFunc, DoTableStruct(), RenderJSON)...)
 }
 
 func GetRouteHandler(path string, method string, handlers ...gin.HandlerFunc) RouteHandler {
@@ -454,11 +456,41 @@ func (c *CrudDB) DoUpdate(i interface{}) error {
 }
 
 func (c *CrudDB) DoInsert(i interface{}) error {
-	chain := c.db.Chain().Table(c.tableName).From(i)
-	result := chain.Save()
+	// 获取结构体的值
+	v := reflect.ValueOf(i)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+
+	// 创建map来存储字段值
+	fields := make(map[string]interface{})
+	t := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		field := t.Field(i)
+		// 跳过ID字段，因为它是自增的
+		if field.Name != "ID" {
+			fields[ToSnakeCase(field.Name)] = v.Field(i).Interface()
+		}
+	}
+
+	// 执行插入操作
+	chain := c.db.Chain().Table(c.tableName)
+	result := chain.Save(fields)
 	if result.Error != nil {
 		return result.Error
 	}
+
+	// 获取插入后的ID
+	id, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+
+	// 设置ID值到结构体
+	if idField := v.FieldByName("ID"); idField.IsValid() && idField.CanSet() {
+		idField.SetInt(id)
+	}
+
 	return nil
 }
 
@@ -641,11 +673,16 @@ func buildWhereCondition(c *gin.Context) *define.Condition {
 
 func RenderJSON(c *gin.Context) {
 	results, ok := GetContextEntity(c)
-	if ok {
-		RenderOk(c, results)
-	} else {
+	if !ok {
 		RenderErr2(c, 500, "can't find result")
+		return
 	}
+	// 处理指针类型
+	if v := reflect.ValueOf(results); v.Kind() == reflect.Ptr {
+		results = v.Elem().Interface()
+	}
+	// 设置状态码并输出JSON响应
+	c.JSON(200, RawCodeMsg(200, "ok", results))
 }
 func RenderJSONP(c *gin.Context) {
 	results, ok := GetContextEntity(c)
@@ -735,13 +772,16 @@ func DoInsert() gin.HandlerFunc {
 			panic("can't find data entity")
 		}
 
-		chain := db.Chain().Table(getTableName(i)).From(i)
-		result := chain.Save()
+		// 执行插入操作
+		result := db.Chain().From(i).Save()
 		if result.Error != nil {
 			RenderErrs(c, result.Error)
+			c.Abort()
 			return
 		}
-		SetContextEntity(i)(c)
+
+		// 返回更新后的结构体
+		SetContextEntity(result)(c)
 	}
 }
 
@@ -757,12 +797,12 @@ func DoUpdate() gin.HandlerFunc {
 		}
 
 		chain := db.Chain().Table(getTableName(i)).From(i)
-		result := chain.Save()
+		result := chain.Update()
 		if result.Error != nil {
 			RenderErrs(c, result.Error)
 			return
 		}
-		SetContextEntity(i)(c)
+		SetContextEntity(result)(c)
 	}
 }
 
@@ -783,7 +823,7 @@ func DoDelete() gin.HandlerFunc {
 			RenderErrs(c, result.Error)
 			return
 		}
-		SetContextEntity(i)(c)
+		SetContextEntity(result)(c)
 	}
 }
 
@@ -819,6 +859,10 @@ func QueryList() gin.HandlerFunc {
 			panic("can't find data entity")
 		}
 
+		// 获取分页参数
+		pageNum := getContextPageNumber(c)
+		pageSize := getContextPageSize(c)
+
 		// 获取条件
 		cond := buildWhereCondition(c)
 
@@ -831,26 +875,24 @@ func QueryList() gin.HandlerFunc {
 			chain = chain.Fields(cols...)
 		}
 		if cond != nil {
-			chain = chain.Where(cond.Field, cond.Op, cond.Value)
+			chain = chain.Where2(cond)
 		}
 
-		result := chain.List()
-		if result.Error != nil {
-			RenderErrs(c, result.Error)
+		// 应用分页
+		offset := (pageNum - 1) * pageSize
+		chain = chain.Offset(offset).Limit(pageSize)
+
+		// 执行分页查询
+		result, er := chain.Page(pageNum, pageSize).PageInfo()
+		if er != nil {
+			RenderErr2(c, 500, er.Error())
+			c.Abort()
 			return
 		}
 
-		// 创建目标切片类型
-		sliceType := reflect.SliceOf(reflect.TypeOf(i))
-		resultSlice := reflect.New(sliceType).Interface()
+		// 设置响应数据
+		SetContextEntity(result)(c)
 
-		// 将结果转换为目标类型
-		if err := result.Into(resultSlice); err != nil {
-			RenderErrs(c, err)
-			return
-		}
-
-		SetContextEntity(resultSlice)(c)
 	}
 }
 
@@ -877,7 +919,7 @@ func QuerySingle() gin.HandlerFunc {
 			chain = chain.Fields(cols...)
 		}
 		if cond != nil {
-			chain = chain.Where(cond.Field, cond.Op, cond.Value)
+			chain = chain.Where2(cond)
 		}
 
 		result := chain.First()
@@ -886,16 +928,16 @@ func QuerySingle() gin.HandlerFunc {
 			return
 		}
 
-		// 创建目标类型
-		resultObj := reflect.New(reflect.TypeOf(i)).Interface()
+		// 创建一个新的结构体实例
+		newStruct := reflect.New(reflect.TypeOf(i).Elem()).Interface()
 
 		// 将结果转换为目标类型
-		if err := result.Into(resultObj); err != nil {
+		if err := result.Into(newStruct); err != nil {
 			RenderErrs(c, err)
+			c.Abort()
 			return
 		}
-
-		SetContextEntity(resultObj)(c)
+		SetContextEntity(newStruct)(c)
 	}
 }
 
