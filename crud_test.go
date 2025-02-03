@@ -1,450 +1,311 @@
 package crud
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kmlixh/gom/v4"
 	"github.com/kmlixh/gom/v4/define"
-	_ "github.com/kmlixh/gom/v4/factory/mysql"
 	"github.com/stretchr/testify/assert"
 )
 
-// TestUser 测试用户结构体
-type TestUser struct {
-	ID        int64     `json:"id" gom:"id,primary_key,auto_increment"`
-	Username  string    `json:"username" gom:"username"`
-	Email     string    `json:"email" gom:"email"`
-	Age       int       `json:"age" gom:"age"`
-	Status    string    `json:"status" gom:"status"`
-	CreatedAt time.Time `json:"created_at" gom:"created_at"`
+// 测试用的数据模型
+type TestModel struct {
+	ID   int64  `json:"id" gom:"id,@"`
+	Name string `json:"name" gom:"name"`
 }
 
-func (u *TestUser) TableName() string {
-	return "test_users"
+func (t TestModel) TableName() string {
+	return "test_models"
+}
+func (t TestModel) CreateSql() string {
+	return ""
 }
 
-func init() {
-	Debug = true
-}
+func setupTestRouter() (*gin.Engine, *gom.DB) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
 
-// setupTestDB 设置测试数据库
-func setupTestDB() *gom.DB {
-	debugf("Setting up test database")
-	db, err := gom.Open("mysql", "root:123456@tcp(192.168.110.249:3306)/test?charset=utf8mb4&parseTime=true", &define.DBOptions{
-		Debug: false,
+	// 从环境变量获取数据库配置
+	dbHost := getEnvOrDefault("TEST_DB_HOST", "10.0.1.5")
+	dbPort := getEnvOrDefault("TEST_DB_PORT", "3306")
+	dbUser := getEnvOrDefault("TEST_DB_USER", "root")
+	dbPass := getEnvOrDefault("TEST_DB_PASS", "123456")
+	dbName := getEnvOrDefault("TEST_DB_NAME", "test")
+
+	// 构建数据库连接字符串
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+		dbUser, dbPass, dbHost, dbPort, dbName)
+
+	// 连接数据库
+	db, err := gom.Open("mysql", dsn, &define.DBOptions{
+		Debug: true,
 	})
 	if err != nil {
-		panic(fmt.Sprintf("Failed to connect to database: %v", err))
+		panic(err)
 	}
 
-	// 创建测试表
-	result := db.Chain().RawExecute(`DROP TABLE IF EXISTS test_users`)
-	if result.Error != nil {
-		panic(fmt.Sprintf("Failed to drop table: %v", result.Error))
-	}
-
-	result = db.Chain().RawExecute(`
-		CREATE TABLE test_users (
-			id BIGINT PRIMARY KEY AUTO_INCREMENT,
-			username VARCHAR(255),
-			email VARCHAR(255),
-			age INT,
-			status VARCHAR(50),
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
-	if result.Error != nil {
-		panic(fmt.Sprintf("Failed to create table: %v", result.Error))
-	}
-
-	debugf("Test database setup completed")
-	return db
+	return r, db
 }
 
-// setupTestRouter 设置测试路由
-func setupTestRouter(db *gom.DB) (*gin.Engine, *Crud) {
-	debugf("Setting up test router")
-	gin.SetMode(gin.TestMode)
-	r := gin.Default()
-
-	crud := New2(db, &TestUser{})
-	crud.SetDescription("测试用户管理模块")
-	RegisterCrud(crud)
-
-	api := r.Group("/api/users")
-	crud.RegisterRoutes(api, "")
-
-	RegisterApi(r, "/api-info")
-	RegisterApiDoc(r, "/api-doc")
-
-	debugf("Test router setup completed")
-	return r, crud
+// 获取环境变量，如果不存在则返回默认值
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }
 
-// insertTestData 插入测试数据
-func insertTestData(t *testing.T, db *gom.DB) {
-	testUsers := []map[string]interface{}{
-		{"username": "user1", "email": "user1@test.com", "age": 25, "status": "active"},
-		{"username": "user2", "email": "user2@test.com", "age": 30, "status": "active"},
-		{"username": "user3", "email": "user3@test.com", "age": 35, "status": "inactive"},
-		{"username": "user4", "email": "user4@test.com", "age": 40, "status": "active"},
-		{"username": "user5", "email": "user5@test.com", "age": 45, "status": "inactive"},
-	}
-
-	for _, user := range testUsers {
-		result := db.Chain().Table("test_users").Values(user).Save()
-		assert.NoError(t, result.Error)
-	}
-}
+// 定义测试模型
 
 func TestCRUDOperations(t *testing.T) {
-	db := setupTestDB()
-	r, _ := setupTestRouter(db)
+	// 设置测试环境
+	r, db := setupTestRouter()
+	defer db.Close()
 
-	t.Run("Create", func(t *testing.T) {
-		payload := map[string]interface{}{
-			"username": "testuser",
-			"email":    "test@example.com",
-			"age":      30,
-			"status":   "active",
-		}
-		jsonData, _ := json.Marshal(payload)
+	// 为每个测试用例生成唯一的表名
+	tableName := fmt.Sprintf("test_models_%d", time.Now().UnixNano())
 
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/api/users/save", bytes.NewBuffer(jsonData))
-		req.Header.Set("Content-Type", "application/json")
-		r.ServeHTTP(w, req)
+	// 确保测试表存在并清空数据
+	result := db.Chain().RawExecute(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	assert.NoError(t, result.Error)
 
-		assert.Equal(t, http.StatusOK, w.Code)
+	result = db.Chain().RawExecute(fmt.Sprintf("CREATE TABLE %s (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255))", tableName))
+	assert.NoError(t, result.Error)
 
-		var response map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &response)
-		assert.NoError(t, err)
-		assert.Equal(t, float64(0), response["code"])
+	// 清理测试数据
+	defer func() {
+		result := db.Chain().RawExecute(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+		assert.NoError(t, result.Error)
+	}()
 
-		data := response["data"].(map[string]interface{})
-		assert.Equal(t, "testuser", data["username"])
-		assert.Equal(t, "test@example.com", data["email"])
-		assert.Equal(t, float64(30), data["age"])
-		assert.Equal(t, "active", data["status"])
-	})
+	// 设置表名
+	model := &TestModel{}
+	// 定义测试ID变量
+	var testID int64
 
-	t.Run("Read", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", "/api/users/detail/1", nil)
-		r.ServeHTTP(w, req)
+	// 创建路由处理器
+	crud, err := GetRouteHandler2(
+		"test",
+		model,
+		db,
+		[]string{"id", "name"},
+		[]ConditionParam{{QueryName: "id", Operation: define.OpEq}, {QueryName: "name", Operation: define.OpEq}},
+		[]string{"id", "name"},
+		[]ConditionParam{{QueryName: "id", Operation: define.OpEq}},
+		[]string{"name"},
+		[]string{"name"},
+		[]ConditionParam{{QueryName: "name", Operation: define.OpEq}},
+		[]ConditionParam{{QueryName: "id", Operation: define.OpEq}},
+	)
 
-		assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, err)
+	assert.NotNil(t, crud)
 
-		var response map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &response)
-		assert.NoError(t, err)
-		assert.Equal(t, float64(0), response["code"])
-
-		data := response["data"].(map[string]interface{})
-		assert.Equal(t, "testuser", data["username"])
-		assert.Equal(t, "test@example.com", data["email"])
-	})
-
-	t.Run("Update", func(t *testing.T) {
-		payload := map[string]interface{}{
-			"status": "inactive",
-		}
-		jsonData, _ := json.Marshal(payload)
-
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest("PUT", "/api/users/update/1", bytes.NewBuffer(jsonData))
-		req.Header.Set("Content-Type", "application/json")
-		r.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusOK, w.Code)
-
-		var response map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &response)
-		assert.NoError(t, err)
-		assert.Equal(t, float64(0), response["code"])
-
-		data := response["data"].(map[string]interface{})
-		assert.Equal(t, "inactive", data["status"])
-	})
-
-	t.Run("Delete", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest("DELETE", "/api/users/delete/1", nil)
-		r.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusOK, w.Code)
-
-		// 验证删除后无法查询到记录
-		w = httptest.NewRecorder()
-		req = httptest.NewRequest("GET", "/api/users/detail/1", nil)
-		r.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusNotFound, w.Code)
-	})
-}
-
-func TestPagination(t *testing.T) {
-	db := setupTestDB()
-	r, _ := setupTestRouter(db)
-	insertTestData(t, db)
-
-	tests := []struct {
-		name           string
-		url            string
-		expectedPage   int
-		expectedSize   int
-		expectedTotal  int
-		expectedStatus int
-	}{
-		{
-			name:           "Default Pagination",
-			url:            "/api/users/page",
-			expectedPage:   1,
-			expectedSize:   10,
-			expectedTotal:  5,
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "Custom Pagination",
-			url:            "/api/users/page?page=2&size=2",
-			expectedPage:   2,
-			expectedSize:   2,
-			expectedTotal:  5,
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "Invalid Page",
-			url:            "/api/users/page?page=0",
-			expectedPage:   1,
-			expectedSize:   10,
-			expectedTotal:  5,
-			expectedStatus: http.StatusOK,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			req := httptest.NewRequest("GET", tt.url, nil)
-			r.ServeHTTP(w, req)
-
-			assert.Equal(t, tt.expectedStatus, w.Code)
-
-			var response map[string]interface{}
-			err := json.Unmarshal(w.Body.Bytes(), &response)
-			assert.NoError(t, err)
-
-			data := response["data"].(map[string]interface{})
-			assert.Equal(t, float64(tt.expectedPage), data["page"])
-			assert.Equal(t, float64(tt.expectedSize), data["size"])
-			assert.Equal(t, float64(tt.expectedTotal), data["total"])
-		})
-	}
-}
-
-func TestQueryConditions(t *testing.T) {
-	db := setupTestDB()
-	r, _ := setupTestRouter(db)
-	insertTestData(t, db)
-
-	tests := []struct {
-		name           string
-		url            string
-		expectedCount  int
-		expectedStatus int
-	}{
-		{
-			name:           "Filter by Status",
-			url:            "/api/users/page?status=active",
-			expectedCount:  3,
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "Filter by Age Range",
-			url:            "/api/users/page?age_gte=30&age_lte=40",
-			expectedCount:  3,
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "Filter by Email Like",
-			url:            "/api/users/page?email_like=test",
-			expectedCount:  5,
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "Multiple Filters",
-			url:            "/api/users/page?status=active&age_gt=30",
-			expectedCount:  1,
-			expectedStatus: http.StatusOK,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			req := httptest.NewRequest("GET", tt.url, nil)
-			r.ServeHTTP(w, req)
-
-			assert.Equal(t, tt.expectedStatus, w.Code)
-
-			var response map[string]interface{}
-			err := json.Unmarshal(w.Body.Bytes(), &response)
-			assert.NoError(t, err)
-
-			data := response["data"].(map[string]interface{})
-			assert.Equal(t, float64(tt.expectedCount), data["total"])
-		})
-	}
-}
-
-func TestSorting(t *testing.T) {
-	db := setupTestDB()
-	r, _ := setupTestRouter(db)
-	insertTestData(t, db)
-
-	tests := []struct {
-		name           string
-		url            string
-		expectedOrder  []int
-		expectedStatus int
-	}{
-		{
-			name:           "Sort by Age Ascending",
-			url:            "/api/users/page?sort=age",
-			expectedOrder:  []int{25, 30, 35, 40, 45},
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "Sort by Age Descending",
-			url:            "/api/users/page?sort=-age",
-			expectedOrder:  []int{45, 40, 35, 30, 25},
-			expectedStatus: http.StatusOK,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			req := httptest.NewRequest("GET", tt.url, nil)
-			r.ServeHTTP(w, req)
-
-			assert.Equal(t, tt.expectedStatus, w.Code)
-
-			var response map[string]interface{}
-			err := json.Unmarshal(w.Body.Bytes(), &response)
-			assert.NoError(t, err)
-
-			data := response["data"].(map[string]interface{})
-			list := data["list"].([]interface{})
-
-			ages := make([]int, len(list))
-			for i, item := range list {
-				user := item.(map[string]interface{})
-				ages[i] = int(user["age"].(float64))
-			}
-
-			assert.Equal(t, tt.expectedOrder, ages)
-		})
-	}
-}
-
-func TestErrorHandling(t *testing.T) {
-	db := setupTestDB()
-	r, _ := setupTestRouter(db)
-
-	tests := []struct {
-		name           string
-		method         string
-		url            string
-		payload        interface{}
-		expectedStatus int
-		expectedCode   float64
-	}{
-		{
-			name:           "Invalid JSON",
-			method:         "POST",
-			url:            "/api/users/save",
-			payload:        "invalid json",
-			expectedStatus: http.StatusBadRequest,
-			expectedCode:   float64(CodeInvalid),
-		},
-		{
-			name:           "Record Not Found",
-			method:         "GET",
-			url:            "/api/users/detail/999",
-			expectedStatus: http.StatusNotFound,
-			expectedCode:   float64(CodeNotFound),
-		},
-		{
-			name:   "Invalid Update Data",
-			method: "PUT",
-			url:    "/api/users/update/1",
-			payload: map[string]interface{}{
-				"age": "invalid",
-			},
-			expectedStatus: http.StatusBadRequest,
-			expectedCode:   float64(CodeInvalid),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var req *http.Request
-			if tt.payload != nil {
-				jsonData, _ := json.Marshal(tt.payload)
-				req = httptest.NewRequest(tt.method, tt.url, bytes.NewBuffer(jsonData))
-				req.Header.Set("Content-Type", "application/json")
-			} else {
-				req = httptest.NewRequest(tt.method, tt.url, nil)
-			}
-
-			w := httptest.NewRecorder()
-			r.ServeHTTP(w, req)
-
-			assert.Equal(t, tt.expectedStatus, w.Code)
-
-			var response map[string]interface{}
-			err := json.Unmarshal(w.Body.Bytes(), &response)
-			assert.NoError(t, err)
-			assert.Equal(t, tt.expectedCode, response["code"])
-		})
-	}
-}
-
-func TestFieldFiltering(t *testing.T) {
-	db := setupTestDB()
-	r, crud := setupTestRouter(db)
-	insertTestData(t, db)
-
-	if handler, ok := crud.GetHandler(PAGE); ok {
-		handler.AllowedFields = []string{"username", "email"}
-	}
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/users/page?fields=username,email", nil)
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var response map[string]interface{}
-	err := json.Unmarshal(w.Body.Bytes(), &response)
+	// 注册路由
+	err = crud.Register(r.Group("/api"))
 	assert.NoError(t, err)
 
-	data := response["data"].(map[string]interface{})
-	list := data["list"].([]interface{})
-	for _, item := range list {
-		user := item.(map[string]interface{})
-		assert.Contains(t, user, "username")
-		assert.Contains(t, user, "email")
-		assert.NotContains(t, user, "age")
-		assert.NotContains(t, user, "status")
+	// 测试创建操作
+	t.Run("Create", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		body := `{"name":"test1"}`
+		req := httptest.NewRequest("POST", "/api/test/add", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		// 打印响应内容以便调试
+		t.Logf("Response Body: %s", w.Body.String())
+
+		// 获取响应内容
+		responseBody := w.Body.String()
+		// 解析JSON响应
+		var response struct {
+			Code int                    `json:"code"`
+			Msg  string                 `json:"msg"`
+			Data map[string]interface{} `json:"data"`
+		}
+		err := json.Unmarshal([]byte(responseBody), &response)
+		assert.NoError(t, err, "Failed to unmarshal response: %v", err)
+
+		// 检查响应结构
+		assert.Equal(t, 200, response.Code, "Response code should be 200")
+		assert.NotEmpty(t, response.Data, "Response data should not be empty")
+
+		// 验证数据
+		assert.Equal(t, "test1", response.Data["name"], "Name should match")
+		assert.NotZero(t, response.Data["id"], "ID should not be zero")
+
+		// 保存ID用于后续测试
+		testID = int64(response.Data["id"].(float64))
+	})
+
+	// 测试查询列表
+	t.Run("List", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api/test/list?pageSize=10&pageNum=1", nil)
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var response struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				List       interface{} `json:"list"`
+				Total      int64       `json:"total"`
+				PageSize   int         `json:"pageSize"`
+				PageNumber int         `json:"pageNum"`
+			} `json:"data"`
+		}
+		err := json.Unmarshal(w.Body.Bytes(), &response)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.Code)
+		assert.NotNil(t, response.Data.List)
+		assert.Equal(t, 10, response.Data.PageSize)
+		assert.Equal(t, 1, response.Data.PageNumber)
+	})
+
+	// 测试查询单个
+	t.Run("Detail", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", fmt.Sprintf("/api/test/detail?id=%d", testID), nil)
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var response struct {
+			Code int                    `json:"code"`
+			Msg  string                 `json:"msg"`
+			Data map[string]interface{} `json:"data"`
+		}
+		err := json.Unmarshal(w.Body.Bytes(), &response)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.Code)
+		assert.NotNil(t, response.Data)
+		assert.Equal(t, testID, int64(response.Data["id"].(float64)))
+		assert.Equal(t, "test1", response.Data["name"])
+	})
+
+	// 测试更新
+	t.Run("Update", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"id":%d,"name":"updated"}`, testID)
+		req := httptest.NewRequest("POST", "/api/test/update", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var response struct {
+			Code int                    `json:"code"`
+			Msg  string                 `json:"msg"`
+			Data map[string]interface{} `json:"data"`
+		}
+		err := json.Unmarshal(w.Body.Bytes(), &response)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.Code)
+		assert.NotNil(t, response.Data)
+		assert.Equal(t, testID, int64(response.Data["id"].(float64)))
+		assert.Equal(t, "updated", response.Data["name"])
+	})
+
+	// 测试删除
+	t.Run("Delete", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/test/delete?id=%d", testID), nil)
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var deleteResponse struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+		}
+		err := json.Unmarshal(w.Body.Bytes(), &deleteResponse)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, deleteResponse.Code)
+
+		// 验证记录已被删除
+		w = httptest.NewRecorder()
+		req = httptest.NewRequest("GET", fmt.Sprintf("/api/test/detail?id=%d", testID), nil)
+		r.ServeHTTP(w, req)
+
+		var response struct {
+			Code int         `json:"code"`
+			Msg  string      `json:"msg"`
+			Data interface{} `json:"data"`
+		}
+		err = json.Unmarshal(w.Body.Bytes(), &response)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.Code)
+		assert.Nil(t, response.Data)
+	})
+}
+
+func TestToCamelCaseWithRegex(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"hello_world", "helloWorld"},
+		{"user_name", "userName"},
+		{"id", "id"},
+		{"", ""},
+		{"multiple__underscores", "multipleUnderscores"},
 	}
+
+	for _, test := range tests {
+		result := ToCamelCaseWithRegex(test.input)
+		assert.Equal(t, test.expected, result)
+	}
+}
+
+func TestToSnakeCase(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"helloWorld", "hello_world"},
+		{"userName", "user_name"},
+		{"ID", "i_d"},
+		{"", ""},
+		{"ABC", "a_b_c"},
+	}
+
+	for _, test := range tests {
+		result := ToSnakeCase(test.input)
+		assert.Equal(t, test.expected, result)
+	}
+}
+
+func TestStructToMap(t *testing.T) {
+	type TestStruct struct {
+		ID   int
+		Name string
+	}
+
+	test := TestStruct{
+		ID:   1,
+		Name: "test",
+	}
+
+	ok, result := StructToMap(test)
+	assert.True(t, ok)
+	assert.Equal(t, "int", result["ID"])
+	assert.Equal(t, "string", result["Name"])
+
+	// 测试非结构体输入
+	ok, result = StructToMap(123)
+	assert.False(t, ok)
+	assert.Nil(t, result)
 }

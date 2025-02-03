@@ -3,388 +3,128 @@ package crud
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"time"
-
-	"net/http"
-
+	"errors"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"strings"
+	"time"
 )
 
-// TokenDetail Token详情
 type TokenDetail struct {
-	Token     string        `json:"token"`
-	UserID    string        `json:"user_id"`
-	UserType  string        `json:"user_type"`
-	ExpiresIn time.Duration `json:"expires_in"`
+	Token    string
+	UserId   string
+	UserType string
+	Expire   time.Duration
 }
 
-var (
-	// defaultTokenStore 默认的Token存储
-	defaultTokenStore TokenStore
-)
-
-// SetTokenStore 设置全局Token存储
-func SetTokenStore(store TokenStore) {
-	defaultTokenStore = store
+func (t *TokenDetail) UnmarshalBinary(data []byte) error {
+	return json.Unmarshal(data, t)
 }
 
-// GetTokenStore 获取全局Token存储
-func GetTokenStore() TokenStore {
-	return defaultTokenStore
+func (t TokenDetail) MarshalBinary() (data []byte, err error) {
+	return json.Marshal(t)
 }
 
-// GlobalCheckToken 全局检查token是否合法
-func GlobalCheckToken(token string) bool {
-	if defaultTokenStore == nil {
-		return false
-	}
-	return defaultTokenStore.CheckToken(token)
-}
-
-// GlobalCheckTokenGin 全局检查请求头中的token是否合法
-func GlobalCheckTokenGin(c *gin.Context) bool {
-	if defaultTokenStore == nil {
-		return false
-	}
-	if store, ok := defaultTokenStore.(*RedisTokenStore); ok {
-		return store.CheckTokenGin(c)
-	}
-	return false
-}
-
-// GlobalTokenAuthMiddleware 全局Token验证中间件
-func GlobalTokenAuthMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if !GlobalCheckTokenGin(c) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code":    CodeUnauthorized,
-				"message": "unauthorized",
-			})
-			return
-		}
-		c.Next()
-	}
-}
-
-// TokenStore Token存储接口
 type TokenStore interface {
 	SaveToken(detail TokenDetail) error
-	GetToken(token string) (*TokenDetail, error)
+	GenerateToken(userId string, userType string) string
+	GetTokenDetail(token string) (TokenDetail, error)
 	DeleteToken(token string) error
-	GetUserTokens(userID, userType string) ([]string, error)
-	CheckToken(token string) bool
+	GetTokensOfUser(userId string, userType string) []string
 }
-
-// RedisTokenStore Redis实现的Token存储
 type RedisTokenStore struct {
-	client *redis.Client
-	prefix string
+	RedisClient *redis.Client
 }
 
-// NewRedisTokenStore 创建Redis Token存储
-func NewRedisTokenStore(client *redis.Client, prefix string) *RedisTokenStore {
-	return &RedisTokenStore{
-		client: client,
-		prefix: prefix,
+func (r RedisTokenStore) SaveToken(detail TokenDetail) error {
+	cmd := r.RedisClient.Set(context.Background(), "TOKEN_USER_"+detail.UserType+"_"+detail.UserId+"_"+detail.Token, detail, detail.Expire)
+	if cmd.Err() != nil {
+		return cmd.Err()
 	}
+	cmds := r.RedisClient.Set(context.Background(), "TOKEN_"+detail.Token, detail, detail.Expire)
+	return cmds.Err()
 }
 
-// SaveToken 保存Token
-func (s *RedisTokenStore) SaveToken(detail TokenDetail) error {
-	data, err := json.Marshal(detail)
-	if err != nil {
-		return err
+func (r RedisTokenStore) GenerateToken(userId string, userType string) string {
+	uuid, er := uuid.NewUUID()
+	if er != nil {
+		return ""
 	}
-
-	ctx := context.Background()
-	key := fmt.Sprintf("%s:token:%s", s.prefix, detail.Token)
-	userKey := fmt.Sprintf("%s:user:%s:%s", s.prefix, detail.UserType, detail.UserID)
-
-	pipe := s.client.Pipeline()
-	pipe.Set(ctx, key, data, detail.ExpiresIn)
-	pipe.SAdd(ctx, userKey, detail.Token)
-	pipe.Expire(ctx, userKey, detail.ExpiresIn)
-
-	_, err = pipe.Exec(ctx)
-	return err
+	return uuid.String()
 }
 
-// GetToken 获取Token信息
-func (s *RedisTokenStore) GetToken(token string) (*TokenDetail, error) {
-	ctx := context.Background()
-	key := fmt.Sprintf("%s:token:%s", s.prefix, token)
-
-	data, err := s.client.Get(ctx, key).Bytes()
-	if err != nil {
-		if err == redis.Nil {
-			return nil, nil
-		}
-		return nil, err
+func (r RedisTokenStore) GetTokenDetail(token string) (TokenDetail, error) {
+	cmd := r.RedisClient.Get(context.Background(), "TOKEN_"+token)
+	if cmd.Err() != nil {
+		return TokenDetail{}, cmd.Err()
 	}
-
 	var detail TokenDetail
-	if err := json.Unmarshal(data, &detail); err != nil {
-		return nil, err
+	er := cmd.Scan(&detail)
+	if er != nil || detail.Token == "" {
+		return TokenDetail{}, errors.New("token not found")
 	}
-
-	return &detail, nil
+	return detail, er
 }
 
-// DeleteToken 删除Token
-func (s *RedisTokenStore) DeleteToken(token string) error {
-	detail, err := s.GetToken(token)
-	if err != nil {
-		return err
-	}
-	if detail == nil {
-		return nil
-	}
-
+func (r RedisTokenStore) GetTokensOfUser(userId string, userType string) []string {
+	var results []string
+	prefix := "TOKEN_USER_" + userId + "_" + userType + "_"
 	ctx := context.Background()
-	key := fmt.Sprintf("%s:token:%s", s.prefix, token)
-	userKey := fmt.Sprintf("%s:user:%s:%s", s.prefix, detail.UserType, detail.UserID)
-
-	pipe := s.client.Pipeline()
-	pipe.Del(ctx, key)
-	pipe.SRem(ctx, userKey, token)
-	_, err = pipe.Exec(ctx)
-	return err
-}
-
-// GetUserTokens 获取用户的所有Token
-func (s *RedisTokenStore) GetUserTokens(userID, userType string) ([]string, error) {
-	ctx := context.Background()
-	key := fmt.Sprintf("%s:user:%s:%s", s.prefix, userType, userID)
-	return s.client.SMembers(ctx, key).Result()
-}
-
-// GenerateToken 生成新的Token
-func GenerateToken(userID, userType string, expiresIn time.Duration) TokenDetail {
-	return TokenDetail{
-		Token:     uuid.New().String(),
-		UserID:    userID,
-		UserType:  userType,
-		ExpiresIn: expiresIn,
+	it := r.RedisClient.Scan(ctx, 0, prefix+"*", 1).Iterator()
+	for it.Next(ctx) {
+		results = append(results, strings.TrimLeft(it.Val(), prefix))
 	}
+	return results
 }
 
-// CheckToken 检查指定token是否合法
-func (s *RedisTokenStore) CheckToken(token string) bool {
-	detail, err := s.GetToken(token)
-	if err != nil {
-		return false
+func (r RedisTokenStore) DeleteToken(token string) error {
+	detail, er := r.GetTokenDetail(token)
+	if er != nil {
+		return er
 	}
-	return detail != nil
+	cmd := r.RedisClient.Del(context.Background(), "TOKEN_USER_"+detail.UserType+"_"+detail.UserId+"_"+detail.Token, "TOKEN_"+detail.Token)
+	return cmd.Err()
 }
 
-// CheckTokenGin 检查请求头中是否包含token，并校验token是否合法
-func (s *RedisTokenStore) CheckTokenGin(c *gin.Context) bool {
-	// 从请求头中获取token
-	token := c.GetHeader("Authorization")
+func NewRedisStore(client *redis.Client) RedisTokenStore {
+	return RedisTokenStore{client}
+}
+
+var store TokenStore
+
+func SetStore(tokenStore TokenStore) {
+	store = tokenStore
+}
+
+func GenTokenForUser(userId string, userType string, expire time.Duration) (string, error) {
+	token := store.GenerateToken(userId, userType)
+	detail := TokenDetail{Token: token, UserId: userId, UserType: userType, Expire: expire}
+	er := store.SaveToken(detail)
+	return token, er
+}
+func CheckToken(token string) bool {
+	_, er := store.GetTokenDetail(token)
+	return er == nil
+}
+func CheckTokenGin(c *gin.Context) {
+	token := c.GetHeader("token")
 	if token == "" {
-		// 如果请求头中没有token，尝试从查询参数中获取
-		token = c.Query("token")
-		if token == "" {
-			return false
+		RenderJson(c, Err2(403, "unauthorized!"))
+		c.Abort()
+	} else {
+		if CheckToken(token) {
+			detail, er := store.GetTokenDetail(token)
+			if er == nil && detail.UserId != "" {
+				c.Set("userId", detail.UserId)
+			}
+			c.Next()
+		} else {
+			RenderJson(c, Err2(403, "unauthorized!"))
+			c.Abort()
 		}
 	}
-
-	// 如果token以"Bearer "开头，去掉这个前缀
-	if len(token) > 7 && token[:7] == "Bearer " {
-		token = token[7:]
-	}
-
-	// 检查token是否合法
-	detail, err := s.GetToken(token)
-	if err != nil {
-		return false
-	}
-
-	// 如果token合法，将用户信息存储到上下文中
-	if detail != nil {
-		c.Set("user_id", detail.UserID)
-		c.Set("user_type", detail.UserType)
-		c.Set("token", detail.Token)
-		return true
-	}
-
-	return false
 }
-
-// TokenAuthMiddleware Gin中间件，用于验证token
-func TokenAuthMiddleware(store *RedisTokenStore) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if !store.CheckTokenGin(c) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code":    CodeUnauthorized,
-				"message": "unauthorized",
-			})
-			return
-		}
-		c.Next()
-	}
-}
-
-// GetCurrentUser 从上下文中获取当前用户信息
-func GetCurrentUser(c *gin.Context) (userID, userType string, ok bool) {
-	userIDVal, ok1 := c.Get("user_id")
-	userTypeVal, ok2 := c.Get("user_type")
-	if !ok1 || !ok2 {
-		return "", "", false
-	}
-	userID, ok1 = userIDVal.(string)
-	userType, ok2 = userTypeVal.(string)
-	if !ok1 || !ok2 {
-		return "", "", false
-	}
-	return userID, userType, true
-}
-
-// GetCurrentToken 从上下文中获取当前token
-func GetCurrentToken(c *gin.Context) (token string, ok bool) {
-	tokenVal, exists := c.Get("token")
-	if !exists {
-		return "", false
-	}
-	token, ok = tokenVal.(string)
-	if !ok {
-		return "", false
-	}
-	return token, true
-}
-
-// GlobalSaveToken 全局保存Token
-func GlobalSaveToken(detail TokenDetail) error {
-	if defaultTokenStore == nil {
-		return fmt.Errorf("token store not initialized")
-	}
-	return defaultTokenStore.SaveToken(detail)
-}
-
-// GlobalGetToken 全局获取Token信息
-func GlobalGetToken(token string) (*TokenDetail, error) {
-	if defaultTokenStore == nil {
-		return nil, fmt.Errorf("token store not initialized")
-	}
-	return defaultTokenStore.GetToken(token)
-}
-
-// GlobalDeleteToken 全局删除Token
-func GlobalDeleteToken(token string) error {
-	if defaultTokenStore == nil {
-		return fmt.Errorf("token store not initialized")
-	}
-	return defaultTokenStore.DeleteToken(token)
-}
-
-// GlobalGetUserTokens 全局获取用户的所有Token
-func GlobalGetUserTokens(userID, userType string) ([]string, error) {
-	if defaultTokenStore == nil {
-		return nil, fmt.Errorf("token store not initialized")
-	}
-	return defaultTokenStore.GetUserTokens(userID, userType)
-}
-
-// GlobalGenerateToken 全局生成新的Token
-func GlobalGenerateToken(userID, userType string, expiresIn time.Duration) (TokenDetail, error) {
-	token := GenerateToken(userID, userType, expiresIn)
-	if err := GlobalSaveToken(token); err != nil {
-		return TokenDetail{}, fmt.Errorf("failed to save token: %v", err)
-	}
-	return token, nil
-}
-
-// GlobalGenerateAndSaveToken 全局生成并保存Token，如果已存在则先删除
-func GlobalGenerateAndSaveToken(userID, userType string, expiresIn time.Duration) (TokenDetail, error) {
-	if defaultTokenStore == nil {
-		return TokenDetail{}, fmt.Errorf("token store not initialized")
-	}
-
-	// 获取用户现有的所有token
-	existingTokens, err := GlobalGetUserTokens(userID, userType)
-	if err != nil {
-		return TokenDetail{}, fmt.Errorf("failed to get user tokens: %v", err)
-	}
-
-	// 删除现有的token
-	for _, t := range existingTokens {
-		if err := GlobalDeleteToken(t); err != nil {
-			return TokenDetail{}, fmt.Errorf("failed to delete existing token: %v", err)
-		}
-	}
-
-	// 生成并保存新token
-	return GlobalGenerateToken(userID, userType, expiresIn)
-}
-
-// GlobalValidateAndRefreshToken 全局验证Token并刷新过期时间
-func GlobalValidateAndRefreshToken(token string, expiresIn time.Duration) error {
-	if defaultTokenStore == nil {
-		return fmt.Errorf("token store not initialized")
-	}
-
-	// 获取token信息
-	detail, err := GlobalGetToken(token)
-	if err != nil {
-		return fmt.Errorf("failed to get token: %v", err)
-	}
-	if detail == nil {
-		return fmt.Errorf("token not found")
-	}
-
-	// 更新过期时间
-	detail.ExpiresIn = expiresIn
-	if err := GlobalSaveToken(*detail); err != nil {
-		return fmt.Errorf("failed to refresh token: %v", err)
-	}
-
-	return nil
-}
-
-// GlobalGetCurrentUserDetail 全局获取当前用户的完整Token信息
-func GlobalGetCurrentUserDetail(c *gin.Context) (*TokenDetail, error) {
-	token, ok := GetCurrentToken(c)
-	if !ok {
-		return nil, fmt.Errorf("token not found in context")
-	}
-	return GlobalGetToken(token)
-}
-
-// GlobalCheckTokenWithType 全局检查token是否合法并验证用户类型
-func GlobalCheckTokenWithType(token, requiredType string) bool {
-	if defaultTokenStore == nil {
-		return false
-	}
-	detail, err := GlobalGetToken(token)
-	if err != nil || detail == nil {
-		return false
-	}
-	return detail.UserType == requiredType
-}
-
-// GlobalTokenAuthMiddlewareWithType 全局Token验证中间件（带用户类型验证）
-func GlobalTokenAuthMiddlewareWithType(requiredType string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if !GlobalCheckTokenGin(c) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code":    CodeUnauthorized,
-				"message": "unauthorized",
-			})
-			return
-		}
-
-		userType, _, ok := GetCurrentUser(c)
-		if !ok || userType != requiredType {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"code":    CodeForbidden,
-				"message": "forbidden",
-			})
-			return
-		}
-
-		c.Next()
-	}
+func GetTokensOfUser(userId string, userType string) []string {
+	return store.GetTokensOfUser(userId, userType)
 }
