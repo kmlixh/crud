@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"reflect"
 	"strings"
 	"time"
 
@@ -67,35 +66,50 @@ func Err() CodeMsg {
 func Err2(code int, msg string) CodeMsg {
 	return RawCodeMsg(code, msg, nil)
 }
-func RenderJson(c *gin.Context, data interface{}) {
-	c.JSON(200, data)
+
+// 基础响应结构
+type Response struct {
+	Code int         `json:"code"`
+	Msg  string      `json:"msg"`
+	Data interface{} `json:"data"`
 }
-func RenderOk(c *gin.Context, data ...interface{}) {
-	var result CodeMsg
-	if len(data) == 1 {
-		// 处理单个数据的情况
-		if v := reflect.ValueOf(data[0]); v.Kind() == reflect.Ptr && !v.IsNil() {
-			result = Ok(v.Elem().Interface())
-		} else {
-			result = Ok(data[0])
-		}
-	} else if len(data) > 1 {
-		result = Ok(data)
-	} else {
-		result = Ok(nil)
+
+// RenderJson 渲染JSON响应
+func RenderJson(c *gin.Context, code int, msg string, data interface{}) {
+	c.JSON(http.StatusOK, Response{
+		Code: code,
+		Msg:  msg,
+		Data: data,
+	})
+	c.Abort()
+}
+
+// RenderOk 渲染成功响应
+func RenderOk(c *gin.Context, data interface{}) {
+	RenderJson(c, 0, "ok", data)
+}
+
+// RenderErr 渲染错误响应
+func RenderErr(c *gin.Context, err error) {
+	if err == nil {
+		RenderJson(c, 0, "ok", nil)
+		return
 	}
-	// 设置状态码和响应
-	c.Status(200)
-	c.JSON(200, result)
+	RenderJson(c, 0, err.Error(), nil)
 }
-func RenderErr(c *gin.Context) {
-	c.JSON(200, Err())
+
+// RenderErrs 渲染错误响应
+func RenderErrs(c *gin.Context, err error) {
+	if err == nil {
+		RenderJson(c, 0, "ok", nil)
+		return
+	}
+	RenderJson(c, 0, err.Error(), nil)
 }
-func RenderErrs(c *gin.Context, er error) {
-	c.JSON(200, Err2(500, er.Error()))
-}
+
+// RenderErr2 渲染错误响应
 func RenderErr2(c *gin.Context, code int, msg string) {
-	c.JSON(200, Err2(code, msg))
+	RenderJson(c, code, msg, nil)
 }
 
 func Cors(allowList map[string]bool) gin.HandlerFunc {

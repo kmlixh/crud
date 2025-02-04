@@ -2,7 +2,7 @@ package crud
 
 import "reflect"
 
-func getType(i any) reflect.Type {
+func GetType(i any) reflect.Type {
 	t := reflect.TypeOf(i)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
