@@ -1,7 +1,6 @@
-package testutils
+package crud
 
 import (
-	"database/sql"
 	"fmt"
 	"os"
 	"strconv"
@@ -21,7 +20,7 @@ type TestDBConfig struct {
 func DefaultMySQLConfig() TestDBConfig {
 	return TestDBConfig{
 		Driver:   "mysql",
-		Host:     getEnvOrDefault("TEST_MYSQL_HOST", "10.0.1.5"),
+		Host:     getEnvOrDefault("TEST_MYSQL_HOST", "192.168.110.249"),
 		Port:     getEnvIntOrDefault("TEST_MYSQL_PORT", 3306),
 		User:     getEnvOrDefault("TEST_MYSQL_USER", "root"),
 		Password: getEnvOrDefault("TEST_MYSQL_PASSWORD", "123456"),
@@ -33,10 +32,10 @@ func DefaultMySQLConfig() TestDBConfig {
 func DefaultPostgresConfig() TestDBConfig {
 	return TestDBConfig{
 		Driver:   "postgres",
-		Host:     getEnvOrDefault("TEST_POSTGRES_HOST", "10.0.1.5"),
+		Host:     getEnvOrDefault("TEST_POSTGRES_HOST", "192.168.110.249"),
 		Port:     getEnvIntOrDefault("TEST_POSTGRES_PORT", 5432),
 		User:     getEnvOrDefault("TEST_POSTGRES_USER", "postgres"),
-		Password: getEnvOrDefault("TEST_POSTGRES_PASSWORD", "123456"),
+		Password: getEnvOrDefault("TEST_POSTGRES_PASSWORD", "yzy123"),
 		DBName:   getEnvOrDefault("TEST_POSTGRES_DBNAME", "test"),
 	}
 }
@@ -59,35 +58,6 @@ func (c TestDBConfig) DSN() string {
 	default:
 		return ""
 	}
-}
-
-// SetupTestDB sets up a test database connection
-func SetupTestDB(config TestDBConfig) (*sql.DB, error) {
-	fmt.Printf("Attempting to connect to database with driver %s and DSN %s\n", config.Driver, config.DSN())
-	db, err := sql.Open(config.Driver, config.DSN())
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
-
-	fmt.Println("Successfully opened database connection, attempting to ping...")
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
-	fmt.Println("Successfully pinged database")
-
-	return db, nil
-}
-
-// CleanupTestDB cleans up test database tables
-func CleanupTestDB(db *sql.DB, tables ...string) error {
-	for _, table := range tables {
-		_, err := db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", table))
-		if err != nil {
-			return fmt.Errorf("failed to drop table %s: %w", table, err)
-		}
-	}
-	return nil
 }
 
 // Helper functions

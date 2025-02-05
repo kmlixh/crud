@@ -767,32 +767,8 @@ func DoInsert() gin.HandlerFunc {
 			return
 		}
 
-		// 获取插入后的ID
-		val := reflect.ValueOf(i)
-		if val.Kind() == reflect.Ptr {
-			val = val.Elem()
-		}
-		idField := val.FieldByName("ID")
-		if !idField.IsValid() {
-			RenderErr2(c, 0, "no ID field found")
-			return
-		}
-
-		// 查询完整记录
-		result = chain.Where("id", define.OpEq, idField.Interface()).First()
-		if result.Error != nil {
-			RenderErr2(c, 0, result.Error.Error())
-			return
-		}
-
-		// 将结果数据复制回原始实体
-		if err := result.Into(i); err != nil {
-			RenderErr2(c, 0, err.Error())
-			return
-		}
-
 		// 返回更新后的结构体
-		RenderOk(c, i)
+		RenderOk(c, result)
 	}
 }
 
@@ -817,7 +793,7 @@ func DoUpdate() gin.HandlerFunc {
 
 		idField := val.FieldByName("ID")
 		if !idField.IsValid() {
-			RenderErr2(c, 0, "no ID field found")
+			RenderErr2(c, 500, "no ID field found")
 			return
 		}
 
@@ -825,24 +801,10 @@ func DoUpdate() gin.HandlerFunc {
 		chain := db.Chain().Table(getTableName(i))
 		result := chain.Where("id", define.OpEq, idField.Interface()).Update(i)
 		if result.Error != nil {
-			RenderErr2(c, 0, result.Error.Error())
+			RenderErr2(c, 500, result.Error.Error())
 			return
 		}
-
-		// 查询更新后的完整记录
-		result = chain.Where("id", define.OpEq, idField.Interface()).First()
-		if result.Error != nil {
-			RenderErr2(c, 0, result.Error.Error())
-			return
-		}
-
-		// 将结果数据复制回原始实体
-		if err := result.Into(i); err != nil {
-			RenderErr2(c, 0, err.Error())
-			return
-		}
-
-		RenderOk(c, i)
+		RenderOk(c, result)
 	}
 }
 
@@ -850,23 +812,22 @@ func DoDelete() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		db, ok := GetContextDatabase(c)
 		if !ok {
-			RenderErr2(c, 0, "can't find database")
+			RenderErr2(c, 500, "can't find database")
 			return
 		}
 		i, ok := GetContextEntity(c)
 		if !ok {
-			RenderErr2(c, 0, "can't find data entity")
+			RenderErr2(c, 500, "can't find data entity")
 			return
 		}
 
-		chain := db.Chain().Table(getTableName(i)).From(i)
-		result := chain.Delete()
+		result := db.Chain().Table(getTableName(i)).From(i).Delete()
 		if result.Error != nil {
-			RenderErr2(c, 0, result.Error.Error())
+			RenderErr2(c, 500, result.Error.Error())
 			return
 		}
 
-		RenderOk(c, nil)
+		RenderOk(c, result)
 	}
 }
 
@@ -874,12 +835,12 @@ func QueryList() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		db, ok := GetContextDatabase(c)
 		if !ok {
-			RenderErr2(c, 0, "can't find database")
+			RenderErr2(c, 500, "can't find database")
 			return
 		}
 		i, ok := GetContextEntity(c)
 		if !ok {
-			RenderErr2(c, 0, "can't find data entity")
+			RenderErr2(c, 500, "can't find data entity")
 			return
 		}
 
@@ -905,7 +866,7 @@ func QueryList() gin.HandlerFunc {
 		// 执行分页查询
 		result, er := chain.Page(pageNum, pageSize).PageInfo()
 		if er != nil {
-			RenderErr2(c, 0, er.Error())
+			RenderErr2(c, 500, er.Error())
 			return
 		}
 
@@ -923,13 +884,13 @@ func QueryList() gin.HandlerFunc {
 			// 将map数据转换为JSON
 			jsonData, err := json.Marshal(item)
 			if err != nil {
-				RenderErr2(c, 0, err.Error())
+				RenderErr2(c, 500, err.Error())
 				return
 			}
 
 			// 将JSON解析为结构体
 			if err := json.Unmarshal(jsonData, newStruct); err != nil {
-				RenderErr2(c, 0, err.Error())
+				RenderErr2(c, 500, err.Error())
 				return
 			}
 
@@ -954,12 +915,12 @@ func QuerySingle() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		db, ok := GetContextDatabase(c)
 		if !ok {
-			RenderErr2(c, 0, "can't find database")
+			RenderErr2(c, 500, "can't find database")
 			return
 		}
 		i, ok := GetContextEntity(c)
 		if !ok {
-			RenderErr2(c, 0, "can't find data entity")
+			RenderErr2(c, 500, "can't find data entity")
 			return
 		}
 
@@ -984,7 +945,7 @@ func QuerySingle() gin.HandlerFunc {
 				RenderOk(c, nil)
 				return
 			}
-			RenderErr2(c, 0, result.Error.Error())
+			RenderErr2(c, 500, result.Error.Error())
 			return
 		}
 
@@ -993,7 +954,7 @@ func QuerySingle() gin.HandlerFunc {
 
 		// 将结果转换为目标类型
 		if err := result.Into(newStruct); err != nil {
-			RenderErr2(c, 0, err.Error())
+			RenderErr2(c, 500, err.Error())
 			return
 		}
 		RenderOk(c, newStruct)
@@ -1037,19 +998,19 @@ func DoTableStruct() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		db, ok := GetContextDatabase(c)
 		if !ok {
-			RenderErr2(c, 0, "can't find database")
+			RenderErr2(c, 500, "can't find database")
 			return
 		}
 
 		i, ok := GetContextEntity(c)
 		if !ok {
-			RenderErr2(c, 0, "can't find data entity")
+			RenderErr2(c, 500, "can't find data entity")
 			return
 		}
 
 		tableStruct, er := db.GetTableStruct2(i)
 		if er != nil {
-			RenderErr2(c, 0, er.Error())
+			RenderErr2(c, 500, er.Error())
 			return
 		}
 		RenderOk(c, tableStruct)

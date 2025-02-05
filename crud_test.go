@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -32,20 +31,8 @@ func (t TestModel) CreateSql() string {
 func setupTestRouter() (*gin.Engine, *gom.DB) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-
-	// 从环境变量获取数据库配置
-	dbHost := getEnvOrDefault("TEST_DB_HOST", "10.0.1.5")
-	dbPort := getEnvOrDefault("TEST_DB_PORT", "3306")
-	dbUser := getEnvOrDefault("TEST_DB_USER", "root")
-	dbPass := getEnvOrDefault("TEST_DB_PASS", "123456")
-	dbName := getEnvOrDefault("TEST_DB_NAME", "test")
-
-	// 构建数据库连接字符串
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-		dbUser, dbPass, dbHost, dbPort, dbName)
-
 	// 连接数据库
-	db, err := gom.Open("mysql", dsn, &define.DBOptions{
+	db, err := gom.Open("mysql", DefaultMySQLConfig().DSN(), &define.DBOptions{
 		Debug: true,
 	})
 	if err != nil {
@@ -53,14 +40,6 @@ func setupTestRouter() (*gin.Engine, *gom.DB) {
 	}
 
 	return r, db
-}
-
-// 获取环境变量，如果不存在则返回默认值
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
 }
 
 // 定义测试模型

@@ -86,7 +86,7 @@ func RenderJson(c *gin.Context, code int, msg string, data interface{}) {
 
 // RenderOk 渲染成功响应
 func RenderOk(c *gin.Context, data interface{}) {
-	RenderJson(c, 0, "ok", data)
+	RenderJson(c, 200, "ok", data)
 }
 
 // RenderErr 渲染错误响应
@@ -95,7 +95,7 @@ func RenderErr(c *gin.Context, err error) {
 		RenderJson(c, 0, "ok", nil)
 		return
 	}
-	RenderJson(c, 0, err.Error(), nil)
+	RenderJson(c, 500, err.Error(), nil)
 }
 
 // RenderErrs 渲染错误响应
@@ -104,7 +104,7 @@ func RenderErrs(c *gin.Context, err error) {
 		RenderJson(c, 0, "ok", nil)
 		return
 	}
-	RenderJson(c, 0, err.Error(), nil)
+	RenderJson(c, 500, err.Error(), nil)
 }
 
 // RenderErr2 渲染错误响应
