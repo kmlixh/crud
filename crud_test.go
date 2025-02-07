@@ -139,12 +139,14 @@ func TestCRUDOperations(t *testing.T) {
 			Code int    `json:"code"`
 			Msg  string `json:"msg"`
 			Data struct {
-				List       interface{} `json:"list"`
+				List       []TestModel `json:"list"`
 				Total      int64       `json:"total"`
 				PageSize   int         `json:"pageSize"`
 				PageNumber int         `json:"pageNum"`
 			} `json:"data"`
 		}
+		responseBody := w.Body.String()
+		fmt.Printf("Response Body: %s", responseBody)
 		err := json.Unmarshal(w.Body.Bytes(), &response)
 		assert.NoError(t, err)
 		assert.Equal(t, 200, response.Code)
@@ -156,7 +158,7 @@ func TestCRUDOperations(t *testing.T) {
 	// 测试查询单个
 	t.Run("Detail", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", fmt.Sprintf("/api/test/detail?idEq=%d", 4), nil)
+		req := httptest.NewRequest("GET", fmt.Sprintf("/api/test/detail?idEq=%d", 13), nil)
 		r.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -171,7 +173,7 @@ func TestCRUDOperations(t *testing.T) {
 		assert.Equal(t, 200, response.Code)
 		assert.NotNil(t, response.Data)
 		assert.Positive(t, response.Data["id"])
-		assert.Equal(t, "test1", response.Data["name"])
+		assert.Equal(t, "fsdfsadf", response.Data["name"])
 	})
 
 	// 测试更新

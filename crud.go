@@ -2,7 +2,6 @@ package crud
 
 import "C"
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -18,13 +17,6 @@ import (
 )
 
 var prefix = "auto_crud_inject_"
-
-var (
-	primaryKeys  []string
-	primaryAuto  []string
-	columnNames  []string
-	columnIdxMap map[string]string
-)
 
 func ToCamelCaseWithRegex(s string) string {
 	// 正则表达式匹配一个或多个下划线，后面跟一个字母
@@ -214,6 +206,7 @@ func SetConditionParamAsCnd(queryParam []ConditionParam) gin.HandlerFunc {
 		if cnd != nil && cnd.Field != "" {
 			c.Set(prefix+"cnd", cnd)
 		}
+		SetContextCondition(cnd)(c)
 	}
 }
 
@@ -420,14 +413,13 @@ func GenHandlerRegister(name string, handlers ...RouteHandler) (ICrud, error) {
 	}, nil
 }
 
-func NewCrud(db *gom.DB, tableName string, model interface{}) (ICrud, error) {
+func NewCrud(db *gom.DB, tableName string, model any) (ICrud, error) {
 	if tableName == "" {
 		return nil, errors.New("table name cannot be empty")
 	}
 	if model == nil {
 		return nil, errors.New("model cannot be nil")
 	}
-
 	t := reflect.TypeOf(model)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -439,14 +431,16 @@ func NewCrud(db *gom.DB, tableName string, model interface{}) (ICrud, error) {
 	// 获取模型的所有字段作为默认的查询和操作字段
 	fields := make([]string, 0)
 	defaultCondParams := make([]ConditionParam, 0)
-
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if !field.IsExported() {
 			continue
 		}
-
-		fields = append(fields, field.Name)
+		fieldName := field.Tag.Get("json")
+		if fieldName == "" {
+			fieldName = strings.ToLower(field.Name[:1]) + field.Name[1:]
+		}
+		fields = append(fields, fieldName)
 		fieldType := field.Type.Kind()
 
 		// 根据字段类型生成不同的条件参数
@@ -456,56 +450,56 @@ func NewCrud(db *gom.DB, tableName string, model interface{}) (ICrud, error) {
 			reflect.Float32, reflect.Float64:
 			// 数值类型：支持等于、不等于、大于、大于等于、小于、小于等于
 			defaultCondParams = append(defaultCondParams,
-				ConditionParam{QueryName: field.Name + "Eq", ColName: field.Name, Operation: define.OpEq},
-				ConditionParam{QueryName: field.Name + "Ne", ColName: field.Name, Operation: define.OpNe},
-				ConditionParam{QueryName: field.Name + "Gt", ColName: field.Name, Operation: define.OpGt},
-				ConditionParam{QueryName: field.Name + "Ge", ColName: field.Name, Operation: define.OpGe},
-				ConditionParam{QueryName: field.Name + "Lt", ColName: field.Name, Operation: define.OpLt},
-				ConditionParam{QueryName: field.Name + "Le", ColName: field.Name, Operation: define.OpLe},
+				ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq},
+				ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe},
+				ConditionParam{QueryName: fieldName + "Gt", ColName: fieldName, Operation: define.OpGt},
+				ConditionParam{QueryName: fieldName + "Ge", ColName: fieldName, Operation: define.OpGe},
+				ConditionParam{QueryName: fieldName + "Lt", ColName: fieldName, Operation: define.OpLt},
+				ConditionParam{QueryName: fieldName + "Le", ColName: fieldName, Operation: define.OpLe},
 			)
 
 		case reflect.String:
 			// 字符串类型：支持等于、不等于、包含、左包含、右包含、不包含
 			defaultCondParams = append(defaultCondParams,
-				ConditionParam{QueryName: field.Name + "Eq", ColName: field.Name, Operation: define.OpEq},
-				ConditionParam{QueryName: field.Name + "Ne", ColName: field.Name, Operation: define.OpNe},
-				ConditionParam{QueryName: field.Name + "Like", ColName: field.Name, Operation: define.OpLike},
-				ConditionParam{QueryName: field.Name + "LikeLeft", ColName: field.Name, Operation: define.OpLike},
-				ConditionParam{QueryName: field.Name + "LikeRight", ColName: field.Name, Operation: define.OpLike},
-				ConditionParam{QueryName: field.Name + "NotLike", ColName: field.Name, Operation: define.OpNotLike},
+				ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq},
+				ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe},
+				ConditionParam{QueryName: fieldName + "Like", ColName: fieldName, Operation: define.OpLike},
+				ConditionParam{QueryName: fieldName + "LikeLeft", ColName: fieldName, Operation: define.OpLike},
+				ConditionParam{QueryName: fieldName + "LikeRight", ColName: fieldName, Operation: define.OpLike},
+				ConditionParam{QueryName: fieldName + "NotLike", ColName: fieldName, Operation: define.OpNotLike},
 			)
 
 		case reflect.Slice, reflect.Array:
 			// 数组/切片类型：支持包含和不包含
 			defaultCondParams = append(defaultCondParams,
-				ConditionParam{QueryName: field.Name + "In", ColName: field.Name, Operation: define.OpIn},
-				ConditionParam{QueryName: field.Name + "NotIn", ColName: field.Name, Operation: define.OpNotIn},
+				ConditionParam{QueryName: fieldName + "In", ColName: fieldName, Operation: define.OpIn},
+				ConditionParam{QueryName: fieldName + "NotIn", ColName: fieldName, Operation: define.OpNotIn},
 			)
 
 		case reflect.Struct:
 			// 检查是否是时间类型
 			if field.Type == reflect.TypeOf(time.Time{}) {
 				defaultCondParams = append(defaultCondParams,
-					ConditionParam{QueryName: field.Name + "Eq", ColName: field.Name, Operation: define.OpEq},
-					ConditionParam{QueryName: field.Name + "Ne", ColName: field.Name, Operation: define.OpNe},
-					ConditionParam{QueryName: field.Name + "Gt", ColName: field.Name, Operation: define.OpGt},
-					ConditionParam{QueryName: field.Name + "Ge", ColName: field.Name, Operation: define.OpGe},
-					ConditionParam{QueryName: field.Name + "Lt", ColName: field.Name, Operation: define.OpLt},
-					ConditionParam{QueryName: field.Name + "Le", ColName: field.Name, Operation: define.OpLe},
+					ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq},
+					ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe},
+					ConditionParam{QueryName: fieldName + "Gt", ColName: fieldName, Operation: define.OpGt},
+					ConditionParam{QueryName: fieldName + "Ge", ColName: fieldName, Operation: define.OpGe},
+					ConditionParam{QueryName: fieldName + "Lt", ColName: fieldName, Operation: define.OpLt},
+					ConditionParam{QueryName: fieldName + "Le", ColName: fieldName, Operation: define.OpLe},
 				)
 			} else {
 				// 普通结构体类型：只支持等于和不等于
 				defaultCondParams = append(defaultCondParams,
-					ConditionParam{QueryName: field.Name + "Eq", ColName: field.Name, Operation: define.OpEq},
-					ConditionParam{QueryName: field.Name + "Ne", ColName: field.Name, Operation: define.OpNe},
+					ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq},
+					ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe},
 				)
 			}
 
 		default:
 			// 其他类型：默认只支持等于和不等于
 			defaultCondParams = append(defaultCondParams,
-				ConditionParam{QueryName: field.Name + "Eq", ColName: field.Name, Operation: define.OpEq},
-				ConditionParam{QueryName: field.Name + "Ne", ColName: field.Name, Operation: define.OpNe},
+				ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq},
+				ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe},
 			)
 		}
 	}
@@ -526,76 +520,6 @@ func NewCrud(db *gom.DB, tableName string, model interface{}) (ICrud, error) {
 	)
 }
 
-func QueryPage() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		db, ok := GetContextDatabase(c)
-		if !ok {
-			panic("can't find database")
-		}
-		i, ok := GetContextEntity(c)
-		if !ok {
-			panic("can't find data entity")
-		}
-
-		// 获取条件
-		cond := buildWhereCondition(c)
-
-		// 获取分页参数
-		page := 1
-		size := 10
-		if p, err := strconv.Atoi(c.DefaultQuery("page", "1")); err == nil {
-			page = p
-		}
-		if s, err := strconv.Atoi(c.DefaultQuery("size", "10")); err == nil {
-			size = s
-		}
-
-		// 获取排序参数
-		sort := c.DefaultQuery("sort", "")
-
-		// 构建查询
-		chain := db.Chain().Table(getTableName(i))
-		if cond != nil {
-			chain = chain.Where(cond.Field, cond.Op, cond.Value)
-		}
-
-		// 应用排序
-		if sort != "" {
-			if strings.HasPrefix(sort, "-") {
-				chain = chain.OrderByDesc(strings.TrimPrefix(sort, "-"))
-			} else {
-				chain = chain.OrderBy(sort)
-			}
-		}
-
-		// 设置分页
-		chain = chain.Page(page, size)
-
-		// 执行查询
-		result := chain.List()
-		if result.Error != nil {
-			RenderErrs(c, result.Error)
-			return
-		}
-
-		// 获取总数
-		total, err := chain.Count()
-		if err != nil {
-			RenderErrs(c, err)
-			return
-		}
-
-		// 返回分页结果
-		pageResult := gin.H{
-			"total": total,
-			"page":  page,
-			"size":  size,
-			"data":  result.Data,
-		}
-		SetContextEntity(pageResult)(c)
-	}
-}
-
 // 辅助函数
 func getTableName(i interface{}) string {
 	if t, ok := i.(interface{ TableName() string }); ok {
@@ -610,50 +534,6 @@ func getSelectColumns(c *gin.Context) []string {
 		cols = cc.([]string)
 	}
 	return cols
-}
-
-func buildWhereCondition(c *gin.Context) *define.Condition {
-	if cnd, ok := getContextCondition(c); ok && cnd != nil {
-		var condition *define.Condition
-		for field, payload := range cnd.PayLoads {
-			var newCond *define.Condition
-			switch payload.Type {
-			case define.OpEq:
-				newCond = define.Eq(field, payload.Value)
-			case define.OpNe:
-				newCond = define.Ne(field, payload.Value)
-			case define.OpGt:
-				newCond = define.Gt(field, payload.Value)
-			case define.OpGe:
-				newCond = define.Ge(field, payload.Value)
-			case define.OpLt:
-				newCond = define.Lt(field, payload.Value)
-			case define.OpLe:
-				newCond = define.Le(field, payload.Value)
-			case define.OpLike:
-				newCond = define.Like(field, payload.Value)
-			case define.OpNotLike:
-				newCond = define.NotLike(field, payload.Value)
-			case define.OpIn:
-				if slice, ok := payload.Value.([]interface{}); ok {
-					newCond = define.In(field, slice...)
-				}
-			case define.OpNotIn:
-				if slice, ok := payload.Value.([]interface{}); ok {
-					newCond = define.NotIn(field, slice...)
-				}
-			}
-			if newCond != nil {
-				if condition == nil {
-					condition = newCond
-				} else {
-					condition = condition.And(newCond)
-				}
-			}
-		}
-		return condition
-	}
-	return nil
 }
 
 func RenderJSON(c *gin.Context) {
@@ -678,7 +558,7 @@ func RenderJSONP(c *gin.Context) {
 	}
 }
 
-var Operators = []string{"Eq", "Le", "Lt", "Ge", "Gt", "Like", "LikeLeft", "LikeRight", "In", "NotIn", "NotLike", "NotEq"}
+//var Operators = []string{"Eq", "Le", "Lt", "Ge", "Gt", "Like", "LikeLeft", "LikeRight", "In", "NotIn", "NotLike", "NotEq"}
 
 func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (*define.Condition, map[string]interface{}, error) {
 	maps, err := GetMapFromRst(c)
@@ -693,47 +573,46 @@ func MapToParamCondition(c *gin.Context, conditionParams []ConditionParam) (*def
 			if hasOldVal {
 				return nil, nil, fmt.Errorf("u have a query condition like [%s]", oldName)
 			}
-			for _, oper := range Operators {
-				val, hasVal := maps[param.QueryName+oper]
-				if hasVal {
-					hasValMap[param.ColName] = param.QueryName + oper
-					var newCond *define.Condition
-					switch oper {
-					case "Eq":
-						newCond = define.Eq(param.ColName, val)
-					case "NotEq":
-						newCond = define.Ne(param.ColName, val)
-					case "Le":
-						newCond = define.Le(param.ColName, val)
-					case "Lt":
-						newCond = define.Lt(param.ColName, val)
-					case "Ge":
-						newCond = define.Ge(param.ColName, val)
-					case "Gt":
-						newCond = define.Gt(param.ColName, val)
-					case "Like":
-						newCond = define.Like(param.ColName, val)
-					case "LikeLeft":
-						newCond = define.Like(param.ColName, "%"+val.(string))
-					case "LikeRight":
-						newCond = define.Like(param.ColName, val.(string)+"%")
-					case "In":
-						if slice, ok := val.([]interface{}); ok {
-							newCond = define.In(param.ColName, slice...)
-						}
-					case "NotIn":
-						if slice, ok := val.([]interface{}); ok {
-							newCond = define.NotIn(param.ColName, slice...)
-						}
-					case "NotLike":
-						newCond = define.NotLike(param.ColName, val)
+			val, hasVal := maps[param.QueryName]
+			if hasVal {
+				hasValMap[param.ColName] = param.QueryName
+				var newCond *define.Condition
+				oper := strings.Replace(param.QueryName, param.ColName, "", -1)
+				switch oper {
+				case "Eq":
+					newCond = define.Eq(param.ColName, val)
+				case "NotEq":
+					newCond = define.Ne(param.ColName, val)
+				case "Le":
+					newCond = define.Le(param.ColName, val)
+				case "Lt":
+					newCond = define.Lt(param.ColName, val)
+				case "Ge":
+					newCond = define.Ge(param.ColName, val)
+				case "Gt":
+					newCond = define.Gt(param.ColName, val)
+				case "Like":
+					newCond = define.Like(param.ColName, val)
+				case "LikeLeft":
+					newCond = define.Like(param.ColName, "%"+val.(string))
+				case "LikeRight":
+					newCond = define.Like(param.ColName, val.(string)+"%")
+				case "In":
+					if slice, ok := val.([]interface{}); ok {
+						newCond = define.In(param.ColName, slice...)
 					}
-					if newCond != nil {
-						if cnd == nil {
-							cnd = newCond
-						} else {
-							cnd = cnd.And(newCond)
-						}
+				case "NotIn":
+					if slice, ok := val.([]interface{}); ok {
+						newCond = define.NotIn(param.ColName, slice...)
+					}
+				case "NotLike":
+					newCond = define.NotLike(param.ColName, val)
+				}
+				if newCond != nil {
+					if cnd == nil {
+						cnd = newCond
+					} else {
+						cnd = cnd.And(newCond)
 					}
 				}
 			}
@@ -849,7 +728,7 @@ func QueryList() gin.HandlerFunc {
 		pageSize := getContextPageSize(c)
 
 		// 获取条件
-		cond := buildWhereCondition(c)
+		cond, ok := getContextCondition(c)
 
 		// 获取要查询的字段
 		cols := getSelectColumns(c)
@@ -862,55 +741,32 @@ func QueryList() gin.HandlerFunc {
 		if cond != nil {
 			chain = chain.Where2(cond)
 		}
-
 		// 执行分页查询
-		result, er := chain.Page(pageNum, pageSize).PageInfo()
+		result, er := chain.From(i).Page(pageNum, pageSize).PageInfo()
 		if er != nil {
 			RenderErr2(c, 500, er.Error())
 			return
 		}
-
-		// 创建一个新的切片来存储结果
-		sliceType := reflect.SliceOf(reflect.TypeOf(i).Elem())
-		slice := reflect.MakeSlice(sliceType, 0, len(result.List.([]map[string]interface{})))
-		slicePtr := reflect.New(sliceType)
-		slicePtr.Elem().Set(slice)
-
-		// 将结果数据转换为目标类型
-		for _, item := range result.List.([]map[string]interface{}) {
-			// 创建一个新的结构体实例
-			newStruct := reflect.New(reflect.TypeOf(i).Elem()).Interface()
-
-			// 将map数据转换为JSON
-			jsonData, err := json.Marshal(item)
-			if err != nil {
-				RenderErr2(c, 500, err.Error())
-				return
-			}
-
-			// 将JSON解析为结构体
-			if err := json.Unmarshal(jsonData, newStruct); err != nil {
-				RenderErr2(c, 500, err.Error())
-				return
-			}
-
-			// 将结构体添加到切片中
-			slice = reflect.Append(slice, reflect.ValueOf(newStruct).Elem())
-		}
-		slicePtr.Elem().Set(slice)
-
-		// 设置响应数据
-		pageResult := PageInfo{
-			PageNum:    int64(result.PageNum),
-			PageSize:   int64(result.PageSize),
-			TotalSize:  result.Total,
-			TotalPages: int64(result.Pages),
-			Data:       slicePtr.Interface(),
-		}
-		RenderOk(c, pageResult)
+		RenderOk(c, result)
 	}
 }
+func CreateSliceByReflect(instance any) any {
+	typ := reflect.TypeOf(instance) // 获取结构体的类型
 
+	if typ.Kind() == reflect.Ptr {
+		typ = typ.Elem()
+	}
+	// 确保是结构体类型
+	if typ.Kind() != reflect.Struct {
+		panic("Expected a struct type")
+	}
+
+	// 创建该结构体的切片类型
+	sliceType := reflect.SliceOf(typ)
+	slice := reflect.MakeSlice(sliceType, 0, 10) // 初始长度0，容量10
+
+	return slice.Interface() // 返回 interface{} 类型的切片
+}
 func QuerySingle() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		db, ok := GetContextDatabase(c)
@@ -925,7 +781,7 @@ func QuerySingle() gin.HandlerFunc {
 		}
 
 		// 获取条件
-		cond := buildWhereCondition(c)
+		cond, ok := getContextCondition(c)
 
 		// 获取要查询的字段
 		cols := getSelectColumns(c)
@@ -961,17 +817,15 @@ func QuerySingle() gin.HandlerFunc {
 	}
 }
 
-func getContextCondition(c *gin.Context) (*Condition, bool) {
+func getContextCondition(c *gin.Context) (*define.Condition, bool) {
 	i, ok := GetContextAny(c, "cnd")
 	if ok {
-		if cnd, ok := i.(Condition); ok {
-			return &cnd, true
-		}
+		return i.(*define.Condition), ok
 	}
 	return nil, false
 }
 
-func SetContextCondition(cnd *Condition) gin.HandlerFunc {
+func SetContextCondition(cnd *define.Condition) gin.HandlerFunc {
 	return SetContextAny("cnd", cnd)
 }
 
