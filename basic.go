@@ -88,14 +88,11 @@ func RenderJson(c *gin.Context, code int, msg string, data interface{}) {
 func RenderOk(c *gin.Context, data interface{}) {
 	RenderJson(c, 200, "ok", data)
 }
-
-// RenderErr 渲染错误响应
-func RenderErr(c *gin.Context, err error) {
-	if err == nil {
-		RenderJson(c, 0, "ok", nil)
-		return
-	}
-	RenderJson(c, 500, err.Error(), nil)
+func JsonOk(c *gin.Context, data interface{}) {
+	RenderJson(c, 200, "ok", data)
+}
+func JsonErrs(c *gin.Context, err error) {
+	RenderErrs(c, err)
 }
 
 // RenderErrs 渲染错误响应

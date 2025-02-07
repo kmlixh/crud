@@ -436,9 +436,13 @@ func NewCrud(db *gom.DB, tableName string, model any) (ICrud, error) {
 		if !field.IsExported() {
 			continue
 		}
+
 		fieldName := field.Tag.Get("json")
-		if fieldName == "" {
-			fieldName = strings.ToLower(field.Name[:1]) + field.Name[1:]
+		gomTag := field.Tag.Get("gom")
+		if gomTag != "" {
+			fieldName = strings.Split(gomTag, ",")[0]
+		} else {
+			continue
 		}
 		fields = append(fields, fieldName)
 		fieldType := field.Type.Kind()
@@ -548,14 +552,6 @@ func RenderJSON(c *gin.Context) {
 	}
 	// 设置状态码并输出JSON响应
 	RenderOk(c, results)
-}
-func RenderJSONP(c *gin.Context) {
-	results, ok := GetContextEntity(c)
-	if ok {
-		c.JSONP(200, results)
-	} else {
-		c.JSONP(200, nil)
-	}
 }
 
 //var Operators = []string{"Eq", "Le", "Lt", "Ge", "Gt", "Like", "LikeLeft", "LikeRight", "In", "NotIn", "NotLike", "NotEq"}
