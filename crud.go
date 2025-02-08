@@ -509,7 +509,7 @@ func NewCrud(db *gom.DB, tableName string, model any) (ICrud, error) {
 	}
 
 	// 调用 NewCrud2 创建路由处理器
-	return NewCrud2(
+	crud, err := NewCrud2(
 		tableName,         // 表名作为路由前缀
 		model,             // 模型对象
 		db,                // 数据库连接
@@ -522,6 +522,116 @@ func NewCrud(db *gom.DB, tableName string, model any) (ICrud, error) {
 		defaultCondParams, // 更新条件参数
 		defaultCondParams, // 删除条件参数
 	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// 生成模型的Schema
+	modelSchema := Schema{
+		Type:       "object",
+		Properties: make(map[string]Schema),
+	}
+
+	// 遍历模型字段，生成Schema
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		fieldName := field.Tag.Get("json")
+		if fieldName == "-" {
+			continue
+		}
+		if fieldName == "" {
+			fieldName = field.Name
+		}
+
+		// 根据字段类型设置Schema
+		fieldSchema := Schema{}
+		switch field.Type.Kind() {
+		case reflect.String:
+			fieldSchema.Type = "string"
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			fieldSchema.Type = "integer"
+		case reflect.Float32, reflect.Float64:
+			fieldSchema.Type = "number"
+		case reflect.Bool:
+			fieldSchema.Type = "boolean"
+		case reflect.Struct:
+			if field.Type == reflect.TypeOf(time.Time{}) {
+				fieldSchema.Type = "string"
+				fieldSchema.Properties = map[string]Schema{"format": {Type: "date-time"}}
+			}
+		}
+
+		modelSchema.Properties[fieldName] = fieldSchema
+	}
+
+	// 添加模型Schema到Swagger
+	addSchema(t.Name(), modelSchema)
+
+	// 注册CRUD接口到Swagger
+	basePath := "/" + tableName
+
+	// 列表查询接口
+	addPath(basePath, "GET", Operation{
+		Summary:     "获取" + t.Name() + "列表",
+		Description: "分页查询" + t.Name() + "列表数据",
+		Tags:        []string{t.Name()},
+		Parameters: []Parameter{
+			{Name: "pageNum", In: "query", Description: "页码", Required: false, Schema: Schema{Type: "integer"}},
+			{Name: "pageSize", In: "query", Description: "每页数量", Required: false, Schema: Schema{Type: "integer"}},
+		},
+		Responses: map[string]Response{
+			"200": {
+				Description: "成功",
+				Content: map[string]MediaType{
+					"application/json": {
+						Schema: Schema{
+							Type: "object",
+							Properties: map[string]Schema{
+								"code": {Type: "integer"},
+								"data": {
+									Type:  "array",
+									Items: &Schema{Ref: "#/components/schemas/" + t.Name()},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	// 创建接口
+	addPath(basePath, "POST", Operation{
+		Summary:     "创建" + t.Name(),
+		Description: "创建新的" + t.Name() + "记录",
+		Tags:        []string{t.Name()},
+		RequestBody: &RequestBody{
+			Description: t.Name() + "创建参数",
+			Required:    true,
+			Content: map[string]MediaType{
+				"application/json": {
+					Schema: Schema{Ref: "#/components/schemas/" + t.Name()},
+				},
+			},
+		},
+		Responses: map[string]Response{
+			"200": {
+				Description: "成功",
+				Content: map[string]MediaType{
+					"application/json": {
+						Schema: Schema{Ref: "#/components/schemas/" + t.Name()},
+					},
+				},
+			},
+		},
+	})
+
+	return crud, nil
 }
 
 // 辅助函数
