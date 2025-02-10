@@ -216,7 +216,7 @@ type RouteHandler struct {
 	HttpMethod  string            // HTTP方法
 	Name        string            // 接口名称
 	Description string            // 接口说明
-	Parameters  []APIParam        // 入参说明
+	Parameters  []ApiProperty     // 入参说明
 	Response    APIResponse       // 响应说明
 	Handlers    []gin.HandlerFunc // 处理函数
 }
@@ -273,44 +273,7 @@ type ConditionParam struct {
 	DataType  reflect.Kind
 }
 
-func generateListParameters(params []ConditionParam) []APIParam {
-	var apiParams []APIParam
-	for _, param := range params {
-		var paramType string
-		switch param.DataType {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			paramType = "integer"
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			paramType = "integer"
-		case reflect.Float32, reflect.Float64:
-			paramType = "number"
-		case reflect.Bool:
-			paramType = "boolean"
-		case reflect.String:
-			paramType = "string"
-		case reflect.Slice, reflect.Array:
-			paramType = "array"
-		case reflect.Struct:
-			if param.DataType == reflect.TypeOf(time.Time{}).Kind() {
-				paramType = "string"
-			} else {
-				paramType = "object"
-			}
-		default:
-			paramType = "string"
-		}
-
-		apiParams = append(apiParams, APIParam{
-			Name:        param.QueryName,
-			Type:        paramType,
-			Required:    false,
-			Description: "Condition parameter for " + param.ColName,
-		})
-	}
-	return apiParams
-}
-
-func NewCrud2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam) (ICrud, error) {
+func NewCrud2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam, resultPropertiese []ApiProperty) (ICrud, error) {
 	t := reflect.TypeOf(i)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -322,7 +285,7 @@ func NewCrud2(prefix string, i any, db *gom.DB, queryCols []string, queryConditi
 	listHandler := GetQueryListHandler(
 		modelName+"列表查询",
 		"获取"+modelName+"分页列表",
-		generateListParameters(queryConditionParam),
+		generateApiPropertys(queryConditionParam, "query", false),
 		generateListResponse(modelName),
 		SetContextDatabase(db),
 		SetContextEntity(i),
@@ -336,7 +299,7 @@ func NewCrud2(prefix string, i any, db *gom.DB, queryCols []string, queryConditi
 	detailHandler := GetQuerySingleHandler(
 		modelName+"详情查询",
 		"获取单个"+modelName+"详情",
-		generateDetailParameters(detailConditionParam),
+		generateApiPropertys(detailConditionParam, "query", false),
 		generateDetailResponse(modelName),
 		SetContextDatabase(db),
 		SetContextEntity(i),
@@ -350,7 +313,7 @@ func NewCrud2(prefix string, i any, db *gom.DB, queryCols []string, queryConditi
 	insertHandler := GetInsertHandler(
 		modelName+"新增",
 		"新增"+modelName,
-		generateInsertParameters(nil),
+		[]ApiProperty{},
 		generateInsertResponse(modelName),
 		SetContextDatabase(db),
 		DoNothingFunc,
@@ -364,7 +327,7 @@ func NewCrud2(prefix string, i any, db *gom.DB, queryCols []string, queryConditi
 	updateHandler := GetUpdateHandler(
 		modelName+"更新",
 		"更新"+modelName,
-		generateUpdateParameters(updateConditionParam),
+		generateApiPropertys(updateConditionParam, "query", false),
 		generateUpdateResponse(modelName),
 		SetContextDatabase(db),
 		DoNothingFunc,
@@ -378,7 +341,7 @@ func NewCrud2(prefix string, i any, db *gom.DB, queryCols []string, queryConditi
 	deleteHandler := GetDeleteHandler(
 		modelName+"删除",
 		"删除"+modelName,
-		generateDeleteParameters(deleteConditionParam),
+		generateApiPropertys(deleteConditionParam, "query", false),
 		generateDeleteResponse(modelName),
 		SetContextDatabase(db),
 		SetContextEntity(i),
@@ -405,31 +368,31 @@ func NewCrud2(prefix string, i any, db *gom.DB, queryCols []string, queryConditi
 	return GenHandlerRegister(prefix, listHandler, detailHandler, insertHandler, updateHandler, deleteHandler, tableStructHandler)
 }
 
-func GetQueryListHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+func GetQueryListHandler(name, description string, parameters []ApiProperty, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
 	return GetRouteHandler(string(PathList), "GET", name, description, parameters, response, append(beforeCommitFunc, QueryList())...)
 }
 
-func GetQuerySingleHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+func GetQuerySingleHandler(name, description string, parameters []ApiProperty, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
 	return GetRouteHandler(string(PathDetail), "GET", name, description, parameters, response, append(beforeCommitFunc, QuerySingle())...)
 }
 
-func GetInsertHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+func GetInsertHandler(name, description string, parameters []ApiProperty, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
 	return GetRouteHandler(string(PathAdd), "POST", name, description, parameters, response, append(beforeCommitFunc, DoInsert())...)
 }
 
-func GetUpdateHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+func GetUpdateHandler(name, description string, parameters []ApiProperty, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
 	return GetRouteHandler(string(PathUpdate), "POST", name, description, parameters, response, append(beforeCommitFunc, DoUpdate())...)
 }
 
-func GetDeleteHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+func GetDeleteHandler(name, description string, parameters []ApiProperty, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
 	return GetRouteHandler(string(PathDelete), "POST", name, description, parameters, response, append(beforeCommitFunc, DoDelete())...)
 }
 
-func GetTableStructHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+func GetTableStructHandler(name, description string, parameters []ApiProperty, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
 	return GetRouteHandler(string(PathTableStruct), "GET", name, description, parameters, response, append(beforeCommitFunc, DoTableStruct())...)
 }
 
-func GetRouteHandler(path, method, name, description string, parameters []APIParam, response APIResponse, handlers ...gin.HandlerFunc) RouteHandler {
+func GetRouteHandler(path, method, name, description string, parameters []ApiProperty, response APIResponse, handlers ...gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
 		Path:        path,
 		HttpMethod:  method,
@@ -574,25 +537,15 @@ func NewCrud(db *gom.DB, tableName string, model any) (ICrud, error) {
 	if t.Kind() != reflect.Struct {
 		return nil, errors.New("model must be a struct")
 	}
+	tableStruct, er := db.GetTableStruct(model, tableName)
+	if er != nil {
+		return nil, er
+	}
 
 	// 获取模型的所有字段作为默认的查询和操作字段
 	fields := make([]string, 0)
 	defaultCondParams := make([]ConditionParam, 0)
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		if !field.IsExported() {
-			continue
-		}
-
-		fieldName := field.Tag.Get("json")
-		gomTag := field.Tag.Get("gom")
-		if gomTag != "" {
-			fieldName = strings.Split(gomTag, ",")[0]
-		} else {
-			continue
-		}
-		fields = append(fields, fieldName)
-		fieldType := field.Type.Kind()
+	for colName, fieldName := range tableStruct.Columns {
 
 		// 根据字段类型生成不同的条件参数
 		switch fieldType {
@@ -1015,26 +968,25 @@ func DoTableStruct() gin.HandlerFunc {
 }
 
 // 添加缺失的生成函数
-func generateDetailResponse(modelName string) APIResponse {
-	return APIResponse{
-		Type:        "object",
-		Description: modelName + " detail response",
-		Schema: &APIParam{
-			Type: modelName,
+func generateDetailResponse(modelName string, resultPropertiese []ApiProperty) APIResponse {
+	resp := NewCodeMsgResponse("获取"+modelName+"列表", 200, "ok")
+	resp.Content["data"] = MediaType{
+		Schema: &ApiProperty{
+			Fields: resultPropertiese,
 		},
 	}
+	return resp
 }
-func generateListResponse(modelName string) APIResponse {
-	return APIResponse{
-		Type:        "array",
-		Description: modelName + " list response",
-		Schema: &APIParam{
-			Type: modelName,
-		},
+func generateListResponse(modelName string, resultPropertiese []ApiProperty) APIResponse {
+	resp := NewCodeMsgResponse("获取"+modelName+"列表", 200, "ok")
+	pageInfo := GeneratePageInfoApiProperty(resultPropertiese)
+	resp.Content["data"] = MediaType{
+		Schema: &pageInfo,
 	}
+	return resp
 }
-func generateAPIParams(params []ConditionParam, location string, required bool) []APIParam {
-	var apiParams []APIParam
+func generateApiPropertys(params []ConditionParam, location string, required bool) []ApiProperty {
+	var ApiPropertys []ApiProperty
 	for _, param := range params {
 		var paramType string
 		switch param.DataType {
@@ -1060,7 +1012,7 @@ func generateAPIParams(params []ConditionParam, location string, required bool) 
 			paramType = "string"
 		}
 
-		apiParams = append(apiParams, APIParam{
+		ApiPropertys = append(ApiPropertys, ApiProperty{
 			Name:        param.QueryName,
 			Type:        paramType,
 			Required:    required,
@@ -1068,64 +1020,53 @@ func generateAPIParams(params []ConditionParam, location string, required bool) 
 			Location:    location,
 		})
 	}
-	return apiParams
+	return ApiPropertys
 }
 
-func generateDetailParameters(params []ConditionParam) []APIParam {
-	return generateAPIParams(params, "query", false)
-}
-
-func generateInsertParameters(params []ConditionParam) []APIParam {
-	return generateAPIParams(params, "body", true)
-}
-
-func generateUpdateParameters(params []ConditionParam) []APIParam {
-	return generateAPIParams(params, "body", true)
-}
-
-func generateDeleteParameters(params []ConditionParam) []APIParam {
-	return generateAPIParams(params, "query", true)
-}
-
-func generateTableStructParameters() []APIParam {
-	return []APIParam{} // 表结构查询不需要参数
+func generateTableStructParameters() []ApiProperty {
+	return []ApiProperty{} // 表结构查询不需要参数
 }
 
 func generateInsertResponse(modelName string) APIResponse {
-	return APIResponse{
-		Type:        "object",
-		Description: "Insert operation result",
-		Schema: &APIParam{
-			Type: modelName,
+	resp := NewCodeMsgResponse("获取"+modelName+"列表", 200, "ok")
+	resp.Content["data"] = MediaType{
+		Schema: &ApiProperty{
+			Type:   "object",
+			Fields: GenerateApiPropertiesFromStruct(define.Result{}),
 		},
 	}
+	return resp
 }
 
 func generateUpdateResponse(modelName string) APIResponse {
-	return APIResponse{
-		Type:        "object",
-		Description: "Update operation result",
-		Schema: &APIParam{
-			Type: modelName,
+	resp := NewCodeMsgResponse("获取"+modelName+"列表", 200, "ok")
+	resp.Content["data"] = MediaType{
+		Schema: &ApiProperty{
+			Type:   "object",
+			Fields: GenerateApiPropertiesFromStruct(define.Result{}),
 		},
 	}
+	return resp
 }
-
-func generateDeleteResponse(modelName string) APIResponse {
-	return APIResponse{
-		Type:        "object",
-		Description: "Delete operation result",
+func gennerateCodeMsgApiPram() []ApiProperty {
+	return []ApiProperty{
+		{Type: "integer", Name: "code", Description: "code", Required: true},
+		{Type: "string", Name: "msg", Description: "msg", Required: true},
 	}
+}
+func generateDeleteResponse(modelName string) APIResponse {
+	resp := NewCodeMsgResponse("获取"+modelName+"列表", 200, "ok")
+	resp.Content["data"] = MediaType{
+		Schema: &ApiProperty{
+			Type:   "object",
+			Fields: GenerateApiPropertiesFromStruct(define.Result{}),
+		},
+	}
+	return resp
 }
 
 func generateTableStructResponse(modelName string) APIResponse {
-	return APIResponse{
-		Type:        "object",
-		Description: "Table structure information",
-		Schema: &APIParam{
-			Type: "TableStruct",
-		},
-	}
+	return NewCodeMsgResponse("获取"+modelName+"表结构", 200, "ok")
 }
 
 // 添加一个空的 DoNothingFunc 用于默认处理
