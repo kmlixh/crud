@@ -173,7 +173,7 @@ func TestCRUDOperations(t *testing.T) {
 		assert.Equal(t, 200, response.Code)
 		assert.NotNil(t, response.Data)
 		assert.Positive(t, response.Data["id"])
-		assert.Equal(t, "fsdfsadf", response.Data["name"])
+		assert.Equal(t, "test1", response.Data["name"])
 	})
 
 	// 测试更新
