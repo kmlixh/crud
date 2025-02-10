@@ -16,10 +16,13 @@ type TestDBConfig struct {
 	DBName   string
 }
 
-// var ip="192.168.110.249"
-var ip = "10.0.1.5"
+var ip = "192.168.110.249"
+
+// var ip = "10.0.1.5"
 var pwdM = "123456"
-var pwdP = "123456"
+
+// var pwdP = "123456"
+var pwdP = "yzy123"
 
 // DefaultMySQLConfig returns default MySQL configuration for tests
 func DefaultMySQLConfig() TestDBConfig {

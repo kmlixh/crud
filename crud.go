@@ -212,9 +212,13 @@ func SetConditionParamAsCnd(queryParam []ConditionParam) gin.HandlerFunc {
 
 // RouteHandler represents a route handler configuration
 type RouteHandler struct {
-	Path       string
-	HttpMethod string
-	Handlers   []gin.HandlerFunc
+	Path        string            // 路由路径
+	HttpMethod  string            // HTTP方法
+	Name        string            // 接口名称
+	Description string            // 接口说明
+	Parameters  []APIParam        // 入参说明
+	Response    APIResponse       // 响应说明
+	Handlers    []gin.HandlerFunc // 处理函数
 }
 
 // ICrud represents the CRUD interface
@@ -266,47 +270,174 @@ type ConditionParam struct {
 	QueryName string
 	ColName   string
 	Operation define.OpType
+	DataType  reflect.Kind
+}
+
+func generateListParameters(params []ConditionParam) []APIParam {
+	var apiParams []APIParam
+	for _, param := range params {
+		var paramType string
+		switch param.DataType {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			paramType = "integer"
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			paramType = "integer"
+		case reflect.Float32, reflect.Float64:
+			paramType = "number"
+		case reflect.Bool:
+			paramType = "boolean"
+		case reflect.String:
+			paramType = "string"
+		case reflect.Slice, reflect.Array:
+			paramType = "array"
+		case reflect.Struct:
+			if param.DataType == reflect.TypeOf(time.Time{}).Kind() {
+				paramType = "string"
+			} else {
+				paramType = "object"
+			}
+		default:
+			paramType = "string"
+		}
+
+		apiParams = append(apiParams, APIParam{
+			Name:        param.QueryName,
+			Type:        paramType,
+			Required:    false,
+			Description: "Condition parameter for " + param.ColName,
+		})
+	}
+	return apiParams
 }
 
 func NewCrud2(prefix string, i any, db *gom.DB, queryCols []string, queryConditionParam []ConditionParam, queryDetailCols []string, detailConditionParam []ConditionParam, insertCols []string, updateCols []string, updateConditionParam []ConditionParam, deleteConditionParam []ConditionParam) (ICrud, error) {
-	listHandler := GetQueryListHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(queryConditionParam), SetColumns(queryCols), DefaultGenPageFromRstQuery, DoNothingFunc)
-	detailHandler := GetQuerySingleHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(detailConditionParam), SetColumns(queryDetailCols), DoNothingFunc, DoNothingFunc)
-	insertHandler := GetInsertHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), DoNothingFunc, SetColumns(insertCols), DoNothingFunc, DoNothingFunc)
-	updateHandler := GetUpdateHandler(SetContextDatabase(db), DoNothingFunc, DefaultUnMarshFunc(i), SetConditionParamAsCnd(updateConditionParam), SetColumns(updateCols), DoNothingFunc, DoNothingFunc)
-	deleteHandler := GetDeleteHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, SetConditionParamAsCnd(deleteConditionParam), DoNothingFunc, DoNothingFunc, DoNothingFunc)
-	tableStructHandler := GetTableStructHandler(SetContextDatabase(db), SetContextEntity(i), DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc, DoNothingFunc)
-	return GenHandlerRegister(prefix, listHandler, insertHandler, detailHandler, updateHandler, deleteHandler, tableStructHandler)
+	t := reflect.TypeOf(i)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	// 生成基础API文档
+	modelName := t.Name()
+
+	listHandler := GetQueryListHandler(
+		modelName+"列表查询",
+		"获取"+modelName+"分页列表",
+		generateListParameters(queryConditionParam),
+		generateListResponse(modelName),
+		SetContextDatabase(db),
+		SetContextEntity(i),
+		DoNothingFunc,
+		SetConditionParamAsCnd(queryConditionParam),
+		SetColumns(queryCols),
+		DefaultGenPageFromRstQuery,
+		DoNothingFunc,
+	)
+
+	detailHandler := GetQuerySingleHandler(
+		modelName+"详情查询",
+		"获取单个"+modelName+"详情",
+		generateDetailParameters(detailConditionParam),
+		generateDetailResponse(modelName),
+		SetContextDatabase(db),
+		SetContextEntity(i),
+		DoNothingFunc,
+		SetConditionParamAsCnd(detailConditionParam),
+		SetColumns(queryDetailCols),
+		DoNothingFunc,
+		DoNothingFunc,
+	)
+
+	insertHandler := GetInsertHandler(
+		modelName+"新增",
+		"新增"+modelName,
+		generateInsertParameters(nil),
+		generateInsertResponse(modelName),
+		SetContextDatabase(db),
+		DoNothingFunc,
+		DefaultUnMarshFunc(i),
+		DoNothingFunc,
+		SetColumns(insertCols),
+		DoNothingFunc,
+		DoNothingFunc,
+	)
+
+	updateHandler := GetUpdateHandler(
+		modelName+"更新",
+		"更新"+modelName,
+		generateUpdateParameters(updateConditionParam),
+		generateUpdateResponse(modelName),
+		SetContextDatabase(db),
+		DoNothingFunc,
+		DefaultUnMarshFunc(i),
+		SetConditionParamAsCnd(updateConditionParam),
+		SetColumns(updateCols),
+		DoNothingFunc,
+		DoNothingFunc,
+	)
+
+	deleteHandler := GetDeleteHandler(
+		modelName+"删除",
+		"删除"+modelName,
+		generateDeleteParameters(deleteConditionParam),
+		generateDeleteResponse(modelName),
+		SetContextDatabase(db),
+		SetContextEntity(i),
+		DoNothingFunc,
+		SetConditionParamAsCnd(deleteConditionParam),
+		DoNothingFunc,
+		DoNothingFunc,
+		DoNothingFunc,
+	)
+
+	tableStructHandler := GetTableStructHandler(
+		modelName+"表结构",
+		"获取"+modelName+"表结构",
+		generateTableStructParameters(),
+		generateTableStructResponse(modelName),
+		SetContextDatabase(db),
+		SetContextEntity(i),
+		DoNothingFunc,
+		DoNothingFunc,
+		DoNothingFunc,
+		DoNothingFunc,
+	)
+
+	return GenHandlerRegister(prefix, listHandler, detailHandler, insertHandler, updateHandler, deleteHandler, tableStructHandler)
 }
 
-func GetQueryListHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathList), "GET", append(beforeCommitFunc, QueryList())...)
+func GetQueryListHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathList), "GET", name, description, parameters, response, append(beforeCommitFunc, QueryList())...)
 }
 
-func GetQuerySingleHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathDetail), "GET", append(beforeCommitFunc, QuerySingle())...)
+func GetQuerySingleHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathDetail), "GET", name, description, parameters, response, append(beforeCommitFunc, QuerySingle())...)
 }
 
-func GetInsertHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathAdd), "POST", append(beforeCommitFunc, DoInsert())...)
+func GetInsertHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathAdd), "POST", name, description, parameters, response, append(beforeCommitFunc, DoInsert())...)
 }
 
-func GetUpdateHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathUpdate), "POST", append(beforeCommitFunc, DoUpdate())...)
+func GetUpdateHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathUpdate), "POST", name, description, parameters, response, append(beforeCommitFunc, DoUpdate())...)
 }
 
-func GetDeleteHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathDelete), "POST", append(beforeCommitFunc, DoDelete())...)
+func GetDeleteHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathDelete), "POST", name, description, parameters, response, append(beforeCommitFunc, DoDelete())...)
 }
 
-func GetTableStructHandler(beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
-	return GetRouteHandler(string(PathTableStruct), "GET", append(beforeCommitFunc, DoTableStruct())...)
+func GetTableStructHandler(name, description string, parameters []APIParam, response APIResponse, beforeCommitFunc ...gin.HandlerFunc) RouteHandler {
+	return GetRouteHandler(string(PathTableStruct), "GET", name, description, parameters, response, append(beforeCommitFunc, DoTableStruct())...)
 }
 
-func GetRouteHandler(path string, method string, handlers ...gin.HandlerFunc) RouteHandler {
+func GetRouteHandler(path, method, name, description string, parameters []APIParam, response APIResponse, handlers ...gin.HandlerFunc) RouteHandler {
 	return RouteHandler{
-		Path:       path,
-		HttpMethod: method,
-		Handlers:   handlers,
+		Path:        path,
+		HttpMethod:  method,
+		Name:        name,
+		Description: description,
+		Parameters:  parameters,
+		Response:    response,
+		Handlers:    handlers,
 	}
 }
 
@@ -385,12 +516,28 @@ func (h Crud) Register(routes gin.IRoutes, prefix ...string) error {
 	if len(prefix) == 1 {
 		name = prefix[0]
 	}
+
 	if len(h.Handlers) == 0 {
 		return errors.New("route handler could not be empty or nil")
 	}
+
+	// 注册路由同时注册API文档
 	for _, handler := range h.Handlers {
 		if handler.HttpMethod != "Any" {
 			routes.Handle(handler.HttpMethod, name+"/"+handler.Path, handler.Handlers...)
+
+			// 注册API文档
+			doc := APIDoc{
+				Name:        handler.Name,
+				Path:        name + "/" + handler.Path,
+				Method:      handler.HttpMethod,
+				Description: handler.Description,
+				Group:       name,
+				Parameters:  handler.Parameters,
+				Response:    handler.Response,
+				Metadata:    map[string]interface{}{},
+			}
+			globalAPIRegistry.RegisterAPI(name, doc)
 		} else {
 			routes.Any(name+"/"+handler.Path, handler.Handlers...)
 		}
@@ -454,56 +601,56 @@ func NewCrud(db *gom.DB, tableName string, model any) (ICrud, error) {
 			reflect.Float32, reflect.Float64:
 			// 数值类型：支持等于、不等于、大于、大于等于、小于、小于等于
 			defaultCondParams = append(defaultCondParams,
-				ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq},
-				ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe},
-				ConditionParam{QueryName: fieldName + "Gt", ColName: fieldName, Operation: define.OpGt},
-				ConditionParam{QueryName: fieldName + "Ge", ColName: fieldName, Operation: define.OpGe},
-				ConditionParam{QueryName: fieldName + "Lt", ColName: fieldName, Operation: define.OpLt},
-				ConditionParam{QueryName: fieldName + "Le", ColName: fieldName, Operation: define.OpLe},
+				ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "Gt", ColName: fieldName, Operation: define.OpGt, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "Ge", ColName: fieldName, Operation: define.OpGe, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "Lt", ColName: fieldName, Operation: define.OpLt, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "Le", ColName: fieldName, Operation: define.OpLe, DataType: fieldType},
 			)
 
 		case reflect.String:
 			// 字符串类型：支持等于、不等于、包含、左包含、右包含、不包含
 			defaultCondParams = append(defaultCondParams,
-				ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq},
-				ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe},
-				ConditionParam{QueryName: fieldName + "Like", ColName: fieldName, Operation: define.OpLike},
-				ConditionParam{QueryName: fieldName + "LikeLeft", ColName: fieldName, Operation: define.OpLike},
-				ConditionParam{QueryName: fieldName + "LikeRight", ColName: fieldName, Operation: define.OpLike},
-				ConditionParam{QueryName: fieldName + "NotLike", ColName: fieldName, Operation: define.OpNotLike},
+				ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "Like", ColName: fieldName, Operation: define.OpLike, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "LikeLeft", ColName: fieldName, Operation: define.OpLike, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "LikeRight", ColName: fieldName, Operation: define.OpLike, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "NotLike", ColName: fieldName, Operation: define.OpNotLike, DataType: fieldType},
 			)
 
 		case reflect.Slice, reflect.Array:
 			// 数组/切片类型：支持包含和不包含
 			defaultCondParams = append(defaultCondParams,
-				ConditionParam{QueryName: fieldName + "In", ColName: fieldName, Operation: define.OpIn},
-				ConditionParam{QueryName: fieldName + "NotIn", ColName: fieldName, Operation: define.OpNotIn},
+				ConditionParam{QueryName: fieldName + "In", ColName: fieldName, Operation: define.OpIn, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "NotIn", ColName: fieldName, Operation: define.OpNotIn, DataType: fieldType},
 			)
 
 		case reflect.Struct:
 			// 检查是否是时间类型
 			if field.Type == reflect.TypeOf(time.Time{}) {
 				defaultCondParams = append(defaultCondParams,
-					ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq},
-					ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe},
-					ConditionParam{QueryName: fieldName + "Gt", ColName: fieldName, Operation: define.OpGt},
-					ConditionParam{QueryName: fieldName + "Ge", ColName: fieldName, Operation: define.OpGe},
-					ConditionParam{QueryName: fieldName + "Lt", ColName: fieldName, Operation: define.OpLt},
-					ConditionParam{QueryName: fieldName + "Le", ColName: fieldName, Operation: define.OpLe},
+					ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq, DataType: fieldType},
+					ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe, DataType: fieldType},
+					ConditionParam{QueryName: fieldName + "Gt", ColName: fieldName, Operation: define.OpGt, DataType: fieldType},
+					ConditionParam{QueryName: fieldName + "Ge", ColName: fieldName, Operation: define.OpGe, DataType: fieldType},
+					ConditionParam{QueryName: fieldName + "Lt", ColName: fieldName, Operation: define.OpLt, DataType: fieldType},
+					ConditionParam{QueryName: fieldName + "Le", ColName: fieldName, Operation: define.OpLe, DataType: fieldType},
 				)
 			} else {
 				// 普通结构体类型：只支持等于和不等于
 				defaultCondParams = append(defaultCondParams,
-					ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq},
-					ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe},
+					ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq, DataType: fieldType},
+					ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe, DataType: fieldType},
 				)
 			}
 
 		default:
 			// 其他类型：默认只支持等于和不等于
 			defaultCondParams = append(defaultCondParams,
-				ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq},
-				ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe},
+				ConditionParam{QueryName: fieldName + "Eq", ColName: fieldName, Operation: define.OpEq, DataType: fieldType},
+				ConditionParam{QueryName: fieldName + "Ne", ColName: fieldName, Operation: define.OpNe, DataType: fieldType},
 			)
 		}
 	}
@@ -866,3 +1013,132 @@ func DoTableStruct() gin.HandlerFunc {
 		RenderOk(c, tableStruct)
 	}
 }
+
+// 添加缺失的生成函数
+func generateDetailResponse(modelName string) APIResponse {
+	return APIResponse{
+		Type:        "object",
+		Description: modelName + " detail response",
+		Schema: &APIParam{
+			Type: modelName,
+		},
+	}
+}
+func generateListResponse(modelName string) APIResponse {
+	return APIResponse{
+		Type:        "array",
+		Description: modelName + " list response",
+		Schema: &APIParam{
+			Type: modelName,
+		},
+	}
+}
+func generateAPIParams(params []ConditionParam, location string, required bool) []APIParam {
+	var apiParams []APIParam
+	for _, param := range params {
+		var paramType string
+		switch param.DataType {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			paramType = "integer"
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			paramType = "integer"
+		case reflect.Float32, reflect.Float64:
+			paramType = "number"
+		case reflect.Bool:
+			paramType = "boolean"
+		case reflect.String:
+			paramType = "string"
+		case reflect.Slice, reflect.Array:
+			paramType = "array"
+		case reflect.Struct:
+			if param.DataType == reflect.TypeOf(time.Time{}).Kind() {
+				paramType = "string"
+			} else {
+				paramType = "object"
+			}
+		default:
+			paramType = "string"
+		}
+
+		apiParams = append(apiParams, APIParam{
+			Name:        param.QueryName,
+			Type:        paramType,
+			Required:    required,
+			Description: fmt.Sprintf("%s parameter for %s", strings.Title(location), param.ColName),
+			Location:    location,
+		})
+	}
+	return apiParams
+}
+
+func generateDetailParameters(params []ConditionParam) []APIParam {
+	return generateAPIParams(params, "query", false)
+}
+
+func generateInsertParameters(params []ConditionParam) []APIParam {
+	return generateAPIParams(params, "body", true)
+}
+
+func generateUpdateParameters(params []ConditionParam) []APIParam {
+	return generateAPIParams(params, "body", true)
+}
+
+func generateDeleteParameters(params []ConditionParam) []APIParam {
+	return generateAPIParams(params, "query", true)
+}
+
+func generateTableStructParameters() []APIParam {
+	return []APIParam{} // 表结构查询不需要参数
+}
+
+func generateInsertResponse(modelName string) APIResponse {
+	return APIResponse{
+		Type:        "object",
+		Description: "Insert operation result",
+		Schema: &APIParam{
+			Type: modelName,
+		},
+	}
+}
+
+func generateUpdateResponse(modelName string) APIResponse {
+	return APIResponse{
+		Type:        "object",
+		Description: "Update operation result",
+		Schema: &APIParam{
+			Type: modelName,
+		},
+	}
+}
+
+func generateDeleteResponse(modelName string) APIResponse {
+	return APIResponse{
+		Type:        "object",
+		Description: "Delete operation result",
+	}
+}
+
+func generateTableStructResponse(modelName string) APIResponse {
+	return APIResponse{
+		Type:        "object",
+		Description: "Table structure information",
+		Schema: &APIParam{
+			Type: "TableStruct",
+		},
+	}
+}
+
+// 添加一个空的 DoNothingFunc 用于默认处理
+var DoNothingFunc = func(c *gin.Context) {}
+
+// 添加 DefaultRoutePath 类型定义
+type DefaultRoutePath string
+
+const (
+	PathList        DefaultRoutePath = "list"
+	PathDetail      DefaultRoutePath = "detail"
+	PathAdd         DefaultRoutePath = "add"
+	PathUpdate      DefaultRoutePath = "update"
+	PathDelete      DefaultRoutePath = "delete"
+	PathTableStruct DefaultRoutePath = "struct"
+)
